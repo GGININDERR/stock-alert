@@ -39,7 +39,7 @@ def get_portfolio():
 
 def get_stock_data(symbol):
     ticker = yf.Ticker(symbol)
-    hist = ticker.history(period='60d')
+    hist = ticker.history(period='3mo')
     if hist.empty or len(hist) < 20:
         return None
     return hist
