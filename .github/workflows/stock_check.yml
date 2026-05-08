@@ -1,0 +1,57 @@
+name: Stock Stop-Loss Check
+
+on:
+  schedule:
+    # 台股收盤：13:35 台灣時間 = 05:35 UTC (週一至週五)
+    - cron: '35 5 * * 1-5'
+    # 美股收盤：21:05 UTC (涵蓋 EDT/EST 兩個時區)
+    - cron: '5 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      market:
+        description: '要檢查的市場 (TW / US / ALL)'
+        required: false
+        default: 'ALL'
+
+jobs:
+  check-tw:
+    runs-on: ubuntu-latest
+    if: |
+      github.event.schedule == '35 5 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.market == 'TW' || github.event.inputs.market == 'ALL'))
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Check TW stocks
+        run: python check_stocks.py TW
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+  check-us:
+    runs-on: ubuntu-latest
+    if: |
+      github.event.schedule == '5 21 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.market == 'US' || github.event.inputs.market == 'ALL'))
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Check US stocks
+        run: python check_stocks.py US
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
