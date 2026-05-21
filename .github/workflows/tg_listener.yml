@@ -2,8 +2,8 @@ name: TG Command Listener
 
 on:
   schedule:
-    # 每 5 分鐘輪詢一次(若 repo 設 Public 可改 '*/1' 變成 1 分鐘)
-    - cron: '*/5 * * * *'
+    # 每 1 分鐘輪詢一次(需 repo 設 Public 才不會吃爆免費額度)
+    - cron: '* * * * *'
   workflow_dispatch:
 
 # 同時只跑一個,避免重複處理同一則訊息
