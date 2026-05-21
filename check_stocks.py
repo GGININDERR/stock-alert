@@ -452,15 +452,24 @@ def cmd_whoami():
         creds = json.loads(GOOGLE_CREDENTIALS)
         email = creds.get('client_email', '(無)')
         project = creds.get('project_id', '(無)')
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit"
         send_telegram(
-            "🔑 <b>Service Account 資訊</b>\n\n"
-            f"Email:\n<code>{email}</code>\n\n"
-            f"Project: <code>{project}</code>\n\n"
-            "👉 想用 /add /del /sold,請把上面那個 email 加到你的 Google Sheet 共用清單,"
-            "權限選「<b>編輯者</b>」。"
+            "🔑 <b>持股系統設定資訊</b>\n\n"
+            f"<b>① 你的持股 Sheet:</b>\n"
+            f'<a href="{sheet_url}">點這裡打開 Sheet</a>\n\n'
+            f"<b>② Service Account Email:</b>\n"
+            f"<code>{email}</code>\n"
+            f"<i>(點上面那串可以一鍵複製)</i>\n\n"
+            f"<b>Project:</b> <code>{project}</code>\n\n"
+            "──────────\n"
+            "🔧 <b>開放寫入步驟</b>(用 /add /del /sold 必做):\n"
+            "1. 點 ① 打開 Sheet\n"
+            "2. 右上角藍色「共用」按鈕\n"
+            "3. 貼上 ② 的 email,權限選「<b>編輯者</b>」\n"
+            "4. 取消勾「通知人員」,送出"
         )
     except Exception as e:
-        send_telegram(f"❌ 讀取 GOOGLE_CREDENTIALS 失敗:{e}")
+        send_telegram(f"❌ 讀取設定失敗:{e}")
 
 
 # ───────────────────────── 入口 ─────────────────────────
