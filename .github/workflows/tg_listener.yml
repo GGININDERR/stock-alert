@@ -1,0 +1,30 @@
+name: TG Command Listener
+
+on:
+  schedule:
+    # 每 5 分鐘輪詢一次(若 repo 設 Public 可改 '*/1' 變成 1 分鐘)
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+# 同時只跑一個,避免重複處理同一則訊息
+concurrency:
+  group: tg-listener
+  cancel-in-progress: false
+
+jobs:
+  listen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Poll Telegram and run commands
+        run: python tg_bot.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
