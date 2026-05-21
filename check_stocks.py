@@ -304,12 +304,21 @@ def cmd_price(market, code):
 
 # ───────────────────────── add / del / sold (持股管理) ─────────────────────────
 
-WRITE_HINT = (
-    "⚠️ 寫入失敗,可能 Google Sheets 沒給 Service Account 寫入權限。\n\n"
-    "解法:打開那張 sheet → 右上「共用」→ "
-    "把 service account email(在 GOOGLE_CREDENTIALS JSON 裡的 client_email)"
-    "從 Viewer 改為 <b>Editor</b>。"
-)
+def _service_account_email():
+    try:
+        return json.loads(GOOGLE_CREDENTIALS).get('client_email', '(未知)')
+    except Exception:
+        return '(讀取失敗)'
+
+
+def _write_hint():
+    email = _service_account_email()
+    return (
+        "⚠️ 寫入失敗,Google Sheets 沒給 Service Account 寫入權限。\n\n"
+        "請打開你的持股 Google Sheet → 右上角「<b>共用</b>」按鈕 → 在新增使用者欄位貼入下面這個 email:\n\n"
+        f"<code>{email}</code>\n\n"
+        "→ 把權限從「檢視者」改成「<b>編輯者</b>」→ 傳送(不用發通知)。"
+    )
 
 
 def _find_row(ws, market, code):
@@ -343,7 +352,7 @@ def cmd_add(market, code, cost, shares, name=''):
     try:
         ws = get_worksheet(write=True)
     except Exception as e:
-        send_telegram(WRITE_HINT + f"\n\n錯誤:{e}"); return
+        send_telegram(_write_hint() + f"\n\n錯誤:{e}"); return
 
     # 已存在 → 提示用 /edit 或 /sold
     idx, existing = _find_row(ws, market, code)
@@ -371,7 +380,7 @@ def cmd_add(market, code, cost, shares, name=''):
             f"成本:{cost_f}  股數:{shares_i:,}  日期:{today}"
         )
     except Exception as e:
-        send_telegram(WRITE_HINT + f"\n\n錯誤:{e}")
+        send_telegram(_write_hint() + f"\n\n錯誤:{e}")
 
 
 def cmd_del(market, code):
@@ -379,7 +388,7 @@ def cmd_del(market, code):
     try:
         ws = get_worksheet(write=True)
     except Exception as e:
-        send_telegram(WRITE_HINT + f"\n\n錯誤:{e}"); return
+        send_telegram(_write_hint() + f"\n\n錯誤:{e}"); return
 
     idx, row = _find_row(ws, market, code)
     if not idx:
@@ -391,7 +400,7 @@ def cmd_del(market, code):
             f"({row.get('名稱', '')},原 {row.get('持股數量')} 股)"
         )
     except Exception as e:
-        send_telegram(WRITE_HINT + f"\n\n錯誤:{e}")
+        send_telegram(_write_hint() + f"\n\n錯誤:{e}")
 
 
 def cmd_sold(market, code, n_shares):
@@ -406,7 +415,7 @@ def cmd_sold(market, code, n_shares):
     try:
         ws = get_worksheet(write=True)
     except Exception as e:
-        send_telegram(WRITE_HINT + f"\n\n錯誤:{e}"); return
+        send_telegram(_write_hint() + f"\n\n錯誤:{e}"); return
 
     idx, row = _find_row(ws, market, code)
     if not idx:
@@ -433,7 +442,25 @@ def cmd_sold(market, code, n_shares):
                 f"剩餘:{new_shares:,} 股"
             )
     except Exception as e:
-        send_telegram(WRITE_HINT + f"\n\n錯誤:{e}")
+        send_telegram(_write_hint() + f"\n\n錯誤:{e}")
+
+
+# ───────────────────────── whoami (查 service account email) ─────────────────────────
+
+def cmd_whoami():
+    try:
+        creds = json.loads(GOOGLE_CREDENTIALS)
+        email = creds.get('client_email', '(無)')
+        project = creds.get('project_id', '(無)')
+        send_telegram(
+            "🔑 <b>Service Account 資訊</b>\n\n"
+            f"Email:\n<code>{email}</code>\n\n"
+            f"Project: <code>{project}</code>\n\n"
+            "👉 想用 /add /del /sold,請把上面那個 email 加到你的 Google Sheet 共用清單,"
+            "權限選「<b>編輯者</b>」。"
+        )
+    except Exception as e:
+        send_telegram(f"❌ 讀取 GOOGLE_CREDENTIALS 失敗:{e}")
 
 
 # ───────────────────────── 入口 ─────────────────────────
@@ -453,6 +480,8 @@ def main():
             cmd_check(rest[0] if rest else 'ALL')
         elif cmd == 'list':
             cmd_list()
+        elif cmd == 'whoami':
+            cmd_whoami()
         elif cmd == 'price':
             if len(rest) < 2:
                 send_telegram("❌ 用法:<code>/price TW 2330</code>")

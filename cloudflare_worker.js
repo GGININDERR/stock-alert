@@ -43,6 +43,7 @@ const COMMAND_TABLE = {
   '/check_us':  { cmd: 'check', market: 'US' },
   '/list':      { cmd: 'list',  market: 'ALL' },
   '/portfolio': { cmd: 'list',  market: 'ALL' },
+  '/whoami':    { cmd: 'whoami', market: 'ALL' },
 };
 
 // 多參數指令(需從訊息餘下文字拆出 market + args)
@@ -137,6 +138,7 @@ function prettyLabel(token) {
     '/check_us':  '美股',
     '/list':      '持股清單',
     '/portfolio': '持股清單',
+    '/whoami':    '查 Service Account email',
   }[token] || token;
 }
 
