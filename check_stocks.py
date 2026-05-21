@@ -45,6 +45,14 @@ def get_stock_data(symbol):
     return hist
 
 
+def fetch_tw_history(code):
+    for suffix in ('.TW', '.TWO'):
+        hist = get_stock_data(f"{code}{suffix}")
+        if hist is not None:
+            return hist
+    return None
+
+
 def check_stop_loss(row):
     market = str(row.get('市場', '')).strip()
     code = str(row.get('代碼', '')).strip()
@@ -55,8 +63,7 @@ def check_stop_loss(row):
     if not code or shares == 0 or cost == 0:
         return None
 
-    symbol = f"{code}.TW" if market == 'TW' else code
-    hist = get_stock_data(symbol)
+    hist = fetch_tw_history(code) if market == 'TW' else get_stock_data(code)
     if hist is None:
         return None, code, "資料不足（需至少 20 個交易日）"
 
