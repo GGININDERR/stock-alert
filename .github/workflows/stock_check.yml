@@ -1,25 +1,29 @@
-name: Stock Stop-Loss Check
+name: Stock Bot
 
 on:
   schedule:
-    # 台股收盤：13:35 台灣時間 = 05:35 UTC (週一至週五)
+    # 台股收盤:13:35 台灣時間 = 05:35 UTC (週一至週五)
     - cron: '35 5 * * 1-5'
-    # 美股收盤：21:05 UTC (涵蓋 EDT/EST 兩個時區)
+    # 美股收盤:21:05 UTC (涵蓋 EDT/EST)
     - cron: '5 21 * * 1-5'
   workflow_dispatch:
     inputs:
+      command:
+        description: '指令: check / list / price / add / del / sold'
+        required: false
+        default: 'check'
       market:
-        description: '要檢查的市場 (TW / US / ALL)'
+        description: 'TW / US / ALL(用於 check;或當 price/add/del/sold 的市場)'
         required: false
         default: 'ALL'
+      args:
+        description: '其他參數,空白分隔(price/add/del/sold 用)'
+        required: false
+        default: ''
 
 jobs:
-  check-tw:
+  run:
     runs-on: ubuntu-latest
-    if: |
-      github.event.schedule == '35 5 * * 1-5' ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.market == 'TW' || github.event.inputs.market == 'ALL'))
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,31 +31,42 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Check TW stocks
-        run: python check_stocks.py TW
-        env:
+
+      # 排程觸發 — 台股
+      - name: Scheduled TW check
+        if: github.event.schedule == '35 5 * * 1-5'
+        run: python check_stocks.py check TW
+        env: &env
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
 
-  check-us:
-    runs-on: ubuntu-latest
-    if: |
-      github.event.schedule == '5 21 * * 1-5' ||
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.market == 'US' || github.event.inputs.market == 'ALL'))
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Check US stocks
-        run: python check_stocks.py US
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      # 排程觸發 — 美股
+      - name: Scheduled US check
+        if: github.event.schedule == '5 21 * * 1-5'
+        run: python check_stocks.py check US
+        env: *env
+
+      # 手動 / Worker 觸發 — 跑指定指令
+      - name: Dispatched command
+        if: github.event_name == 'workflow_dispatch'
+        env: *env
+        run: |
+          CMD="${{ github.event.inputs.command }}"
+          MARKET="${{ github.event.inputs.market }}"
+          ARGS="${{ github.event.inputs.args }}"
+          case "$CMD" in
+            check)
+              python check_stocks.py check "$MARKET"
+              ;;
+            list)
+              python check_stocks.py list
+              ;;
+            price|add|del|delete|sold)
+              python check_stocks.py "$CMD" "$MARKET" $ARGS
+              ;;
+            *)
+              python check_stocks.py "$CMD" "$MARKET" $ARGS
+              ;;
+          esac
