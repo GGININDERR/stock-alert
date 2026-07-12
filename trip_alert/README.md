@@ -25,8 +25,12 @@ TRIP_MOCK=1 python -m trip_alert.main
 2. 在 GitHub repo 的 **Settings → Secrets** 設定:
    - `LINE_CHANNEL_TOKEN`
    - `LINE_USER_ID`
-3. 打開 Trip.com 機加酒搜尋頁,把真實網址格式與頁面 selector 填回 `scraper.py`
-   (`_build_search_url` 與 `_parse_card` 兩個函式,已標註 ⚠️)。
+3. **對 selector(只需做一次)**:在**能連到 Trip.com 的電腦**上跑
+   ```bash
+   TRIP_DEBUG=1 python -m trip_alert.main
+   ```
+   會產生 `trip_alert/trip_debug.html`。把這個檔貼給 Claude,
+   即可精準填好 `scraper.py` 的 `_build_search_url` 與 `_parse_card`。
 4. 改 `config.json` 成你要的日期與條件。
 5. GitHub Actions 會依 `trip_check.yml` 的排程自動執行;也可到 Actions 頁面手動 **Run workflow**。
 

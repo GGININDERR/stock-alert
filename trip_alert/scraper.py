@@ -100,7 +100,17 @@ def fetch_packages(cond):
         )
         page.goto(url, wait_until="networkidle", timeout=60000)
 
-        # ⚠️ 以下 selector 為示意,務必用瀏覽器開發者工具確認 Trip.com 實際 class。
+        # === 除錯模式 ===
+        # 第一次在能連到 Trip.com 的電腦上跑,請設環境變數 TRIP_DEBUG=1。
+        # 會把整頁 HTML 存成 trip_debug.html,把這個檔貼給 Claude,
+        # 就能精準對上下面的 selector。
+        if os.getenv("TRIP_DEBUG") == "1":
+            debug_path = os.path.join(os.path.dirname(__file__), "trip_debug.html")
+            with open(debug_path, "w", encoding="utf-8") as f:
+                f.write(page.content())
+            print(f"[scraper] 已存 HTML 供除錯:{debug_path}")
+
+        # ⚠️ 以下 selector 為示意,務必用瀏覽器開發者工具或上面的除錯 HTML 確認實際 class。
         cards = page.query_selector_all("[data-testid='package-card']")
         for card in cards:
             try:
