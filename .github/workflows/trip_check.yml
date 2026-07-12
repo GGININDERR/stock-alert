@@ -1,0 +1,38 @@
+name: Trip Alert (機加酒)
+
+on:
+  schedule:
+    # 每天台灣時間 09:00 與 21:00 各查一次(01:00 / 13:00 UTC)
+    - cron: '0 1,13 * * *'
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run trip alert
+        env:
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: python -m trip_alert.main
+
+      # 把「已通知記錄」存回 repo,避免每次重複通知
+      - name: Persist seen.json
+        run: |
+          if [ -n "$(git status --porcelain trip_alert/seen.json)" ]; then
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add trip_alert/seen.json
+            git commit -m "chore: 更新機加酒已通知記錄"
+            git push
+          fi
