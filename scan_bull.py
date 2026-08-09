@@ -95,7 +95,10 @@ def candidates(min_turnover):
         try:
             last = float(d['last'])
             op = float(d['open24h'])
-            turn = float(d['vol24h']) * last     # 24h 成交額(USDT)
+            # 成交額要用 volCcy24h(基礎幣顆數)乘價格。vol24h 對永續合約
+            # 的單位是「張數」,每張面值(ctVal)各幣不同,拿來乘價格算出的
+            # 不是美元金額,門檻會變成每個幣鬆緊不一。
+            turn = float(d['volCcy24h']) * last  # 24h 成交額(USDT)
         except (KeyError, ValueError):
             continue
         if turn < min_turnover or op <= 0:
