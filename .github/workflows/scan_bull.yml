@@ -2,8 +2,8 @@ name: Crypto Bull Scan
 
 on:
   schedule:
-    # 台北 08:00 / 12:00 / 16:00 / 20:00 = UTC 00 / 04 / 08 / 12
-    - cron: '0 0,4,8,12 * * *'
+    # 每 4 小時一次,含半夜:台北 00/04/08/12/16/20 = UTC 16/20/00/04/08/12
+    - cron: '0 */4 * * *'
   workflow_dispatch:
     inputs:
       args:

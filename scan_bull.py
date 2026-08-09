@@ -19,6 +19,7 @@ import concurrent.futures as cf
 import json
 import os
 import sys
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -34,7 +35,7 @@ DEF_VOLR = 2.0       # 量比門檻:最近一根量 ÷ 前 20 根均量
 DEF_CH1 = 0.5        # 動能過濾:1h 漲幅(%)
 DEF_CH4 = 2.0        # 動能過濾:4h 漲幅(%)
 HOT_DIST = 15.0      # 離 MA20 超過這個 % 視為末端加速,通知標紅
-WORKERS = 12         # 併發執行緒,約 30 秒掃完全市場
+WORKERS = 6          # 併發執行緒:太高會被 OKX 限流,整批 K 線抓不到
 
 TPE = timezone(timedelta(hours=8))
 
@@ -56,14 +57,19 @@ def send_telegram(message):
 
 # ───────────────────────── 工具 ─────────────────────────
 
-def get(url, tries=3):
-    """帶重試的 JSON 取得,失敗回 None"""
-    for _ in range(tries):
+def get(url, tries=4):
+    """帶重試的 JSON 取得,失敗回 None
+
+    OKX 會對密集請求限流,立刻重試同樣會被擋,所以每次重試前遞增等待
+    (0.5 / 1 / 2 秒),讓限流窗口過去。
+    """
+    for attempt in range(tries):
         try:
             req = urllib.request.Request(url, headers=UA)
             return json.load(urllib.request.urlopen(req, timeout=20))
         except Exception:
-            pass
+            if attempt < tries - 1:
+                time.sleep(0.5 * 2 ** attempt)
     return None
 
 
@@ -252,8 +258,9 @@ def main(argv=None):
     print(f'候選 {len(items)} 檔')
 
     res = scan(items, opt.bar)
+    missed = len(items) - len(res)
     hits = pick(res, opt)
-    print(f'掃描 {len(res)} 檔,符合 {len(hits)} 檔')
+    print(f'掃描 {len(res)} 檔(未取得 {missed} 檔),符合 {len(hits)} 檔')
     for x in hits:
         print(line_text(x))
 
