@@ -36,6 +36,7 @@ DEF_CH1 = 0.5        # 動能過濾:1h 漲幅(%)
 DEF_CH4 = 2.0        # 動能過濾:4h 漲幅(%)
 HOT_DIST = 15.0      # 離 MA20 超過這個 % 視為末端加速,通知標紅
 WORKERS = 6          # 併發執行緒:太高會被 OKX 限流,整批 K 線抓不到
+RETRY_GAP = 0.3      # 第二輪補抓時每檔間隔(秒)
 
 TPE = timezone(timedelta(hours=8))
 
@@ -106,11 +107,19 @@ def candidates(min_turnover):
 # ───────────────────────── 第二層:算指標 ─────────────────────────
 
 def measure(item, bar):
-    """抓 K 線並算出均線、量比、各時間尺度漲幅"""
+    """抓 K 線並算出指標。回傳 (狀態, 結果)
+
+    狀態分三種,分開計數才知道漏掉的是「該補抓」還是「本來就算不了」:
+      ok    — 算出指標
+      fail  — 抓不到資料(多半是被限流),值得第二輪補抓
+      short — K 棒不足 120 根(通常是新上市的幣),補抓也沒用
+    """
     inst, _last, ch24, turn = item
     r = get(OKX_CANDLES.format(inst=inst, bar=bar))
-    if not r or r.get('code') != '0' or len(r.get('data', [])) < 130:
-        return None
+    if not r or r.get('code') != '0':
+        return 'fail', None
+    if len(r.get('data', [])) < 130:
+        return 'short', None
 
     rows = list(reversed(r['data']))     # API 回傳新到舊,反轉成舊到新
     closed = rows[:-1]                   # 關鍵:丟掉當下未收盤那根
@@ -119,12 +128,12 @@ def measure(item, bar):
 
     m20, m60, m120 = ma(c, 20), ma(c, 60), ma(c, 120)
     if not m120:                         # K 棒不足 120 根,跳過
-        return None
+        return 'short', None
 
     base = sum(v[-21:-1]) / 20           # 前 20 根均量(不含自己,避免稀釋)
     volr = v[-1] / base if base else 0
 
-    return dict(
+    return 'ok', dict(
         sym=inst.replace('-USDT-SWAP', ''),
         last=c[-1],
         bull=c[-1] > m20 > m60 > m120,           # 多頭排列
@@ -140,12 +149,35 @@ def measure(item, bar):
 
 
 def scan(items, bar):
-    res = []
+    """兩輪掃描:併發跑一輪,失敗的再單執行緒慢慢補
+
+    限流是「短時間內請求太密集」造成的,補抓時剩下的量已經很少,
+    單執行緒加間隔幾乎都拿得回來。回傳 (結果清單, 統計)
+    """
+    res, retry, short = [], [], 0
     with cf.ThreadPoolExecutor(WORKERS) as ex:
-        for r in ex.map(lambda x: measure(x, bar), items):
-            if r:
+        for item, (status, r) in zip(items, ex.map(lambda x: measure(x, bar), items)):
+            if status == 'ok':
                 res.append(r)
-    return res
+            elif status == 'short':
+                short += 1
+            else:
+                retry.append(item)
+
+    first_round = len(res)
+    recovered = 0
+    for item in retry:                   # 第二輪:序列補抓,每檔間隔避免再被擋
+        time.sleep(RETRY_GAP)
+        status, r = measure(item, bar)
+        if status == 'ok':
+            res.append(r)
+            recovered += 1
+        elif status == 'short':
+            short += 1
+
+    stats = dict(first=first_round, recovered=recovered, short=short,
+                 lost=len(items) - len(res) - short)   # 兩輪都沒拿到的
+    return res, stats
 
 
 # ───────────────────────── 第三層:篩選 ─────────────────────────
@@ -257,10 +289,11 @@ def main(argv=None):
     items = candidates(opt.turn)
     print(f'候選 {len(items)} 檔')
 
-    res = scan(items, opt.bar)
-    missed = len(items) - len(res)
+    res, st = scan(items, opt.bar)
     hits = pick(res, opt)
-    print(f'掃描 {len(res)} 檔(未取得 {missed} 檔),符合 {len(hits)} 檔')
+    print(f"第一輪取得 {st['first']},補抓 {st['recovered']},"
+          f"K棒不足 {st['short']},仍未取得 {st['lost']}")
+    print(f'掃描 {len(res)} 檔,符合 {len(hits)} 檔')
     for x in hits:
         print(line_text(x))
 
