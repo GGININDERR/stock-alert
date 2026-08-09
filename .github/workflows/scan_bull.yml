@@ -1,0 +1,29 @@
+name: Crypto Bull Scan
+
+on:
+  schedule:
+    # 台北 08:00 / 12:00 / 16:00 / 20:00 = UTC 00 / 04 / 08 / 12
+    - cron: '0 0,4,8,12 * * *'
+  workflow_dispatch:
+    inputs:
+      args:
+        description: '額外參數,例如: --volr 3 --max-dist 10'
+        required: false
+        default: ''
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scan
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scan_bull.py ${{ github.event.inputs.args }}
