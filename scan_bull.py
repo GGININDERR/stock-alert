@@ -166,26 +166,64 @@ def line_text(x):
             f"量比{x['volr']:.2f} 24h額{x['turn']/1e6:.2f}M")
 
 
+def verdict(x):
+    """依量比與乖離給判讀,對應 PDF 第六節那張表。回傳 (標籤, 說明)"""
+    d = abs(x['dist20'])
+    if d >= HOT_DIST:
+        return '🔴 末端加速', '乖離過大,追高性價比差,建議等回踩 MA20 附近'
+    if x['volr'] >= 4 and d < 10:
+        return '🟢 剛啟動', '量能猛、位階乾淨,這是最理想的進場位置'
+    if x['volr'] >= 4:
+        return '🟡 放量但偏高', '資金介入明顯,但已離短均一段,分批比一次進好'
+    if d < 10:
+        return '🟢 溫和啟動', '量能剛放大、位階乾淨,可留意後續是否續攻'
+    return '🟡 觀察', '多頭整理中還沒噴,先放觀察名單'
+
+
+def thin_warn(x):
+    """成交額太小的提醒門檻:1M USDT 以下滑價風險明顯"""
+    return x['turn'] < 1e6
+
+
 def build_message(hits, scanned, opt):
-    """組 Telegram 訊息(HTML);乖離過大會標紅提醒別追高"""
+    """組 Telegram 訊息(HTML):數據 + 逐檔判讀 + 本輪重點"""
     now = datetime.now(TPE).strftime('%Y-%m-%d %H:%M')
     side = '空頭排列' if opt.short else '多頭排列'
     head = (f"📊 <b>OKX {opt.bar} {side} + 量比&gt;{opt.volr:g} 掃描</b>\n"
-            f"{now} (台北)  掃描 {scanned} 檔,符合 <b>{len(hits)}</b> 檔\n")
+            f"{now} (台北)  掃描 {scanned} 檔,符合 <b>{len(hits)}</b> 檔\n"
+            f"<i>依量比由大到小排,量比越大代表資金介入越猛</i>\n")
 
     blocks = []
-    for x in hits:
-        hot = abs(x['dist20']) >= HOT_DIST
-        flag = ' 🔴<i>末端加速,建議等回踩</i>' if hot else ''
+    for i, x in enumerate(hits, 1):
+        tag, why = verdict(x)
+        thin = ('\n⚠️ <i>24h 成交額不足 1M,掛單簿薄,進出滑價會吃掉利潤</i>'
+                if thin_warn(x) else '')
         blocks.append(
-            f"\n<b>{x['sym']}</b>  {x['last']:.6g}{flag}\n"
+            f"\n<b>{i}. {x['sym']}</b>  {x['last']:.6g}  {tag}\n"
             f"量比 <b>{x['volr']:.2f}</b>ｘ ｜ 離MA20 {x['dist20']:+.2f}%\n"
             f"1h {x['ch1']:+.2f}% ｜ 4h {x['ch4']:+.2f}% ｜ "
             f"12h {x['ch12']:+.2f}% ｜ 24h {x['ch24']:+.2f}%\n"
-            f"24h 成交額 {x['turn']/1e6:.2f}M"
+            f"24h 成交額 {x['turn']/1e6:.2f}M\n"
+            f"→ <i>{why}</i>{thin}\n"
         )
-    tail = "\n\n<i>技術面篩選,非投資建議。訊號來自 OKX,下單請以你的交易所實際報價為準。</i>"
-    return head + ''.join(blocks) + tail
+
+    # 本輪重點:優先挑「量比夠大且乖離乾淨」的,沒有就退回量比最大那檔
+    clean = [x for x in hits if abs(x['dist20']) < 10]
+    best = clean[0] if clean else hits[0]
+    hot = [x['sym'] for x in hits if abs(x['dist20']) >= HOT_DIST]
+    summary = (f"\n<b>本輪重點</b>\n"
+               f"最值得看的是 <b>{best['sym']}</b>:量比 {best['volr']:.2f}ｘ、"
+               f"離 MA20 {best['dist20']:+.2f}%,"
+               f"{'量能與位階都在合理範圍' if abs(best['dist20']) < 10 else '但位階已偏高'}。")
+    if hot:
+        summary += f"\n{'、'.join(hot)} 已進入末端加速區(乖離 ≥{HOT_DIST:g}%),不建議追。"
+    else:
+        summary += f"\n本輪沒有標的乖離超過 {HOT_DIST:g}%,未觸發追高警示。"
+
+    tail = ("\n\n<i>技術面篩選,只看價格與成交量,不看基本面與消息面,非投資建議。"
+            "訊號來自 OKX,下單請以你交易所的實際報價與掛單簿為準;"
+            "高槓桿下止損設定比選標的更重要。</i>")
+    return head + ''.join(blocks) + summary + tail
 
 
 # ───────────────────────── main ─────────────────────────
