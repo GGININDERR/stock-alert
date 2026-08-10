@@ -2,12 +2,19 @@ name: Crypto Bull Scan
 
 on:
   schedule:
-    # 每 4 小時一次,含半夜:台北 00/04/08/12/16/20 = UTC 16/20/00/04/08/12
-    - cron: '0 */4 * * *'
+    # breakout:窗口只有突破的那一小時,不每小時跑會抓不到
+    - cron: '0 * * * *'
+    # early:壓縮盤整的狀態不會一小時就變,每 4 小時足夠
+    # 台北 00/04/08/12/16/20 = UTC 16/20/00/04/08/12
+    - cron: '30 */4 * * *'
   workflow_dispatch:
     inputs:
+      mode:
+        description: '模式: classic / early / breakout / chase'
+        required: false
+        default: 'classic'
       args:
-        description: '額外參數,例如: --volr 3 --max-dist 10'
+        description: '額外參數,例如: --volr 3 --turn 5e6'
         required: false
         default: ''
 
@@ -22,8 +29,21 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Scan
-        env:
+      - name: Scheduled breakout scan
+        if: github.event.schedule == '0 * * * *'
+        env: &env
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python scan_bull.py ${{ github.event.inputs.args }}
+        run: python scan_bull.py --mode breakout
+
+      - name: Scheduled early scan
+        if: github.event.schedule == '30 */4 * * *'
+        env: *env
+        run: python scan_bull.py --mode early
+
+      - name: Dispatched scan
+        if: github.event_name == 'workflow_dispatch'
+        env: *env
+        run: |
+          python scan_bull.py --mode "${{ github.event.inputs.mode }}" \
+            ${{ github.event.inputs.args }}
