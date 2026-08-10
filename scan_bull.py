@@ -1,7 +1,10 @@
 """OKX USDT 永續合約 — 1H 多頭排列 + 量比放大掃描
 
 CLI 用法:
-  python scan_bull.py                 # 用預設參數掃描並推播 Telegram
+  python scan_bull.py                 # classic:多頭排列 + 量比,推播 Telegram
+  python scan_bull.py --mode early    # 壓縮後突破:先橫盤、帶寬收窄,剛站上箱頂
+  python scan_bull.py --mode breakout # 剛啟動:1h/4h/24h 都在動且貼著前高
+  python scan_bull.py --mode chase    # 追高順勢:已在噴,供觀察回踩(門檻最嚴)
   python scan_bull.py --dry           # 只印在螢幕,不發 Telegram
   python scan_bull.py --volr 3        # 量比門檻改 3(訊號更少更精)
   python scan_bull.py --turn 5e6      # 只看 24h 成交額 500 萬美元以上的主流幣
@@ -79,6 +82,66 @@ def ma(vals, n):
     return sum(vals[-n:]) / n if len(vals) >= n else None
 
 
+def rsi(c, n=14):
+    """Wilder RSI。0-100,高於 50 代表近期漲多於跌"""
+    if len(c) <= n:
+        return None
+    gains = losses = 0.0
+    for i in range(1, n + 1):                # 前 n 根先取簡單平均
+        d = c[i] - c[i - 1]
+        gains += max(d, 0)
+        losses += max(-d, 0)
+    ag, al = gains / n, losses / n
+    for i in range(n + 1, len(c)):           # 之後用 Wilder 平滑
+        d = c[i] - c[i - 1]
+        ag = (ag * (n - 1) + max(d, 0)) / n
+        al = (al * (n - 1) + max(-d, 0)) / n
+    if al == 0:
+        return 100.0
+    return 100 - 100 / (1 + ag / al)
+
+
+def ema(vals, n):
+    """指數移動平均,回傳整條序列"""
+    k = 2 / (n + 1)
+    out = [vals[0]]
+    for x in vals[1:]:
+        out.append(x * k + out[-1] * (1 - k))
+    return out
+
+
+def macd_state(c):
+    """回傳 (DIF - DEA) 的柱狀值:大於 0 代表 MACD 在訊號線上方"""
+    if len(c) < 35:
+        return None
+    f, s = ema(c, 12), ema(c, 26)
+    dif = [a - b for a, b in zip(f, s)]
+    dea = ema(dif, 9)
+    return dif[-1] - dea[-1]
+
+
+def bb_width(c, n=20):
+    """布林帶寬 (上軌-下軌)/中軌,衡量波動壓縮程度"""
+    if len(c) < n:
+        return None
+    win = c[-n:]
+    mid = sum(win) / n
+    var = sum((x - mid) ** 2 for x in win) / n
+    return (4 * var ** 0.5) / mid if mid else None
+
+
+def bbw_percentile(c, look=90, n=20):
+    """目前帶寬在近 look 根裡的百分位。越小代表壓縮得越緊"""
+    if len(c) < look + n:
+        return None
+    series = [bb_width(c[:len(c) - i], n) for i in range(look)]
+    series = [x for x in series if x is not None]
+    if not series:
+        return None
+    cur = series[0]
+    return sum(1 for x in series if x <= cur) / len(series)
+
+
 # ───────────────────────── 第一層:挑候選 ─────────────────────────
 
 def candidates(min_turnover):
@@ -128,6 +191,8 @@ def measure(item, bar):
     closed = rows[:-1]                   # 關鍵:丟掉當下未收盤那根
     c = [float(k[4]) for k in closed]    # 收盤價序列
     v = [float(k[5]) for k in closed]    # 成交量序列
+    h = [float(k[2]) for k in closed]    # 最高價序列
+    lo = [float(k[3]) for k in closed]   # 最低價序列
 
     m20, m60, m120 = ma(c, 20), ma(c, 60), ma(c, 120)
     if not m120:                         # K 棒不足 120 根,跳過
@@ -135,6 +200,15 @@ def measure(item, bar):
 
     base = sum(v[-21:-1]) / 20           # 前 20 根均量(不含自己,避免稀釋)
     volr = v[-1] / base if base else 0
+
+    prev20 = ma(c[:-1], 20)              # 前一根的 MA20,用來看均線方向
+    m20_prev20 = ma(c[:-20], 20)         # 20 根前的 MA20
+    m60_prev20 = ma(c[:-20], 60)         # 20 根前的 MA60
+
+    hh24 = max(h[-25:-1])                # 前 24 根的最高點(不含自己)
+    hh48 = max(h[-49:-1]) if len(h) >= 49 else hh24
+    box_hi = max(h[-25:-1])              # 箱頂
+    box_lo = min(lo[-25:-1])             # 箱底
 
     return 'ok', dict(
         sym=inst.replace('-USDT-SWAP', ''),
@@ -148,6 +222,21 @@ def measure(item, bar):
         ch12=(c[-1] / c[-13] - 1) * 100,         # 12 根 K 棒漲幅
         ch24=ch24,                                # 24 小時漲幅
         dist20=(c[-1] / m20 - 1) * 100,          # 離 MA20 乖離
+        rsi=rsi(c, 14),
+        macd=macd_state(c),                       # >0 = MACD 在訊號線上方
+        ma20_up=bool(prev20 and m20 > prev20),    # MA20 是否向上
+        above_mid=c[-1] > m60 and c[-1] > m120,   # 價格站上中長期均線
+        # MA20 由下往上穿越 MA60(比較 20 根前的相對位置)
+        ma_cross=bool(m20_prev20 and m60_prev20
+                      and m20 > m60 and m20_prev20 <= m60_prev20),
+        # 距離前高:0 代表剛好在前高,正數是已突破,負數是還差多少 %
+        dist_hi24=(c[-1] / hh24 - 1) * 100,
+        dist_hi48=(c[-1] / hh48 - 1) * 100,
+        # 近 24 根的箱體振幅(高低差),越小代表盤整越緊
+        box_amp=(box_hi / box_lo - 1) * 100 if box_lo else None,
+        # 帶寬百分位要排除最新那根:突破本身就會把帶寬撐開,含進去會讓
+        # 「突破前是否處於壓縮」這件事永遠測不出來。
+        bbw_pct=bbw_percentile(c[:-1]),
     )
 
 
@@ -185,8 +274,13 @@ def scan(items, bar):
 
 # ───────────────────────── 第三層:篩選 ─────────────────────────
 
-def pick(res, opt):
-    """三個條件同時成立:均線排列 + 量比放大 + 有動能"""
+def between(x, lo, hi):
+    """區間判斷,x 為 None 時視為不符合"""
+    return x is not None and lo <= x <= hi
+
+
+def pick_classic(res, opt):
+    """原始版:均線多頭排列 + 量比放大 + 有動能"""
     key = 'bear' if opt.short else 'bull'
     hits = [x for x in res
             if x[key]
@@ -194,6 +288,75 @@ def pick(res, opt):
             and (abs(x['ch1']) > opt.ch1 or abs(x['ch4']) > opt.ch4)]
     if opt.max_dist is not None:
         hits = [x for x in hits if abs(x['dist20']) < opt.max_dist]
+    return hits
+
+
+def pick_early(res, opt):
+    """壓縮後突破:先橫盤、帶寬收窄,價格首次站上箱頂
+
+    抓的是「還沒噴」的位置,所以不要求漲幅,改看盤整結構是否被打破。
+    """
+    return [x for x in res
+            if x['volr'] > opt.volr
+            and x['turn'] >= opt.turn
+            and between(x['box_amp'], 0, opt.box_amp)      # 前面夠橫
+            and x['bbw_pct'] is not None
+            and x['bbw_pct'] <= opt.bbw_pct                # 帶寬處於低檔
+            and x['dist_hi24'] > 0                         # 首次收在箱頂之上
+            and (x['ma_cross'] or x['above_mid'])          # 均線剛轉多或已站上中長均
+            and between(x['rsi'], 50, 65)]                 # RSI 剛過中線,不是已過熱
+
+
+def pick_breakout(res, opt):
+    """剛啟動:三個時間尺度都在動,且貼著前高,但還沒噴完"""
+    return [x for x in res
+            if x['bull'] and x['ma20_up']
+            and x['volr'] > opt.volr
+            and x['turn'] >= opt.turn
+            and between(x['ch1'], 2, 8)
+            and between(x['ch4'], 5, 20)
+            and between(x['ch24'], 10, 35)
+            and x['dist_hi48'] >= -1                       # 突破或距前高 1% 內
+            and between(x['rsi'], 55, 75)]
+
+
+def pick_chase(res, opt):
+    """追高順勢:已經在噴,只挑量能夠猛、貼著前高的,供觀察回踩"""
+    return [x for x in res
+            if x['bull']
+            and x['volr'] > max(opt.volr, 3)
+            and x['turn'] >= opt.turn
+            and between(x['ch1'], 3, 12)
+            and between(x['ch24'], 20, 80)
+            and x['dist_hi48'] >= -2
+            and between(x['rsi'], 65, 85)]
+
+
+MODES = {
+    'classic': pick_classic,
+    'early': pick_early,
+    'breakout': pick_breakout,
+    'chase': pick_chase,
+}
+
+MODE_DESC = {
+    'classic': '多頭排列 + 量比',
+    'early': '壓縮後突破',
+    'breakout': '剛啟動',
+    'chase': '追高順勢',
+}
+
+# 各模式的預設門檻(未在命令列指定時採用)
+MODE_DEFAULTS = {
+    'classic': dict(turn=DEF_TURNOVER, volr=2.0),
+    'early': dict(turn=5e6, volr=2.0),
+    'breakout': dict(turn=5e6, volr=2.0),
+    'chase': dict(turn=1e7, volr=3.0),
+}
+
+
+def pick(res, opt):
+    hits = MODES[opt.mode](res, opt)
     hits.sort(key=lambda x: -x['volr'])           # 量比大的排前面
     return hits
 
@@ -229,8 +392,8 @@ def thin_warn(x):
 def build_message(hits, scanned, opt):
     """組 Telegram 訊息(HTML):數據 + 逐檔判讀 + 本輪重點"""
     now = datetime.now(TPE).strftime('%Y-%m-%d %H:%M')
-    side = '空頭排列' if opt.short else '多頭排列'
-    head = (f"📊 <b>OKX {opt.bar} {side} + 量比&gt;{opt.volr:g} 掃描</b>\n"
+    label = '空頭排列' if opt.short else MODE_DESC[opt.mode]
+    head = (f"📊 <b>OKX {opt.bar} {label} 掃描</b>\n"
             f"{now} (台北)  掃描 {scanned} 檔,符合 <b>{len(hits)}</b> 檔\n"
             f"<i>依量比由大到小排,量比越大代表資金介入越猛</i>\n")
 
@@ -244,7 +407,8 @@ def build_message(hits, scanned, opt):
             f"量比 <b>{x['volr']:.2f}</b>ｘ ｜ 離MA20 {x['dist20']:+.2f}%\n"
             f"1h {x['ch1']:+.2f}% ｜ 4h {x['ch4']:+.2f}% ｜ "
             f"12h {x['ch12']:+.2f}% ｜ 24h {x['ch24']:+.2f}%\n"
-            f"24h 成交額 {x['turn']/1e6:.2f}M\n"
+            f"24h 成交額 {x['turn']/1e6:.2f}M ｜ RSI {x['rsi']:.0f} ｜ "
+            f"距前高 {x['dist_hi48']:+.2f}%\n"
             f"→ <i>{why}</i>{thin}\n"
         )
 
@@ -271,11 +435,17 @@ def build_message(hits, scanned, opt):
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description='OKX 1H 多頭排列 + 量比掃描')
+    p.add_argument('--mode', default='classic', choices=sorted(MODES),
+                   help='篩選模式,預設 classic')
     p.add_argument('--bar', default='1H', help='K 線級別,預設 1H(可用 4H)')
-    p.add_argument('--turn', type=float, default=DEF_TURNOVER,
-                   help=f'24h 成交額下限 USDT,預設 {DEF_TURNOVER:g}')
-    p.add_argument('--volr', type=float, default=DEF_VOLR,
-                   help=f'量比門檻,預設 {DEF_VOLR:g}')
+    p.add_argument('--turn', type=float, default=None,
+                   help='24h 成交額下限 USDT,未指定則用該模式預設值')
+    p.add_argument('--volr', type=float, default=None,
+                   help='量比門檻,未指定則用該模式預設值')
+    p.add_argument('--box-amp', type=float, default=15.0,
+                   help='early 模式:近 24 根箱體振幅上限 %%,預設 15')
+    p.add_argument('--bbw-pct', type=float, default=0.25,
+                   help='early 模式:布林帶寬百分位上限,預設 0.25(近 90 根最窄的四分之一)')
     p.add_argument('--ch1', type=float, default=DEF_CH1, help='1 根 K 棒漲幅門檻 %%')
     p.add_argument('--ch4', type=float, default=DEF_CH4, help='4 根 K 棒漲幅門檻 %%')
     p.add_argument('--max-dist', type=float, default=None,
@@ -283,7 +453,11 @@ def parse_args(argv):
     p.add_argument('--short', action='store_true', help='改掃空頭排列')
     p.add_argument('--dry', action='store_true', help='只印螢幕,不發 Telegram')
     p.add_argument('--json', default='bull_hits.json', help='結果輸出路徑')
-    return p.parse_args(argv)
+    opt = p.parse_args(argv)
+    for k, val in MODE_DEFAULTS[opt.mode].items():   # 未指定的門檻用模式預設
+        if getattr(opt, k) is None:
+            setattr(opt, k, val)
+    return opt
 
 
 def main(argv=None):
