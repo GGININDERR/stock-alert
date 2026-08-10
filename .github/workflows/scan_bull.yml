@@ -36,10 +36,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scan_bull.py --mode breakout
 
+      # --always:每 4 小時一次,0 檔時也回報,讓你知道系統還活著
       - name: Scheduled early scan
         if: github.event.schedule == '30 */4 * * *'
         env: *env
-        run: python scan_bull.py --mode early
+        run: python scan_bull.py --mode early --always
 
       - name: Dispatched scan
         if: github.event_name == 'workflow_dispatch'
