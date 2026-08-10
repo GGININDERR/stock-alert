@@ -5,6 +5,7 @@ CLI 用法:
   python scan_bull.py --mode early    # 壓縮後突破:先橫盤、帶寬收窄,剛站上箱頂
   python scan_bull.py --mode breakout # 剛啟動:1h/4h/24h 都在動且貼著前高
   python scan_bull.py --mode chase    # 追高順勢:已在噴,供觀察回踩(門檻最嚴)
+  python scan_bull.py --always        # 0 檔時也回報一則,確認系統活著
   python scan_bull.py --dry           # 只印在螢幕,不發 Telegram
   python scan_bull.py --volr 3        # 量比門檻改 3(訊號更少更精)
   python scan_bull.py --turn 5e6      # 只看 24h 成交額 500 萬美元以上的主流幣
@@ -389,6 +390,15 @@ def thin_warn(x):
     return x['turn'] < 1e6
 
 
+def build_empty_message(scanned, opt):
+    """0 檔時的簡短回報,讓你知道系統活著(--always 才會用到)"""
+    now = datetime.now(TPE).strftime('%Y-%m-%d %H:%M')
+    label = '空頭排列' if opt.short else MODE_DESC[opt.mode]
+    return (f"😴 <b>OKX {opt.bar} {label} 掃描</b>\n"
+            f"{now} (台北)  掃描 {scanned} 檔,<b>本輪無標的</b>\n"
+            f"<i>條件未同時成立,維持觀望。</i>")
+
+
 def build_message(hits, scanned, opt):
     """組 Telegram 訊息(HTML):數據 + 逐檔判讀 + 本輪重點"""
     now = datetime.now(TPE).strftime('%Y-%m-%d %H:%M')
@@ -451,6 +461,8 @@ def parse_args(argv):
     p.add_argument('--max-dist', type=float, default=None,
                    help='離 MA20 乖離上限 %%,超過就排除(避開追高)')
     p.add_argument('--short', action='store_true', help='改掃空頭排列')
+    p.add_argument('--always', action='store_true',
+                   help='0 檔時也發一則「本輪無標的」,預設沒標的就靜默')
     p.add_argument('--dry', action='store_true', help='只印螢幕,不發 Telegram')
     p.add_argument('--json', default='bull_hits.json', help='結果輸出路徑')
     opt = p.parse_args(argv)
@@ -478,9 +490,12 @@ def main(argv=None):
         with open(opt.json, 'w', encoding='utf-8') as f:
             json.dump(hits, f, ensure_ascii=False, indent=2)
 
-    # 沒有標的就靜默,不打擾
-    if hits and not opt.dry:
-        send_telegram(build_message(hits, len(res), opt))
+    # 有標的就發;沒標的預設靜默,--always 時改發一則簡短回報
+    if not opt.dry:
+        if hits:
+            send_telegram(build_message(hits, len(res), opt))
+        elif opt.always:
+            send_telegram(build_empty_message(len(res), opt))
 
     return 0
 
