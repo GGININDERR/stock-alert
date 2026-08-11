@@ -7,6 +7,8 @@ on:
     # early:壓縮盤整的狀態不會一小時就變,每 4 小時足夠
     # 台北 00/04/08/12/16/20 = UTC 16/20/00/04/08/12
     - cron: '30 */4 * * *'
+    # 追蹤週報:台北每天 09:15
+    - cron: '15 1 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -17,6 +19,15 @@ on:
         description: '額外參數,例如: --volr 3 --turn 5e6'
         required: false
         default: ''
+
+# 訊號記錄要 commit 回 repo
+permissions:
+  contents: write
+
+# 每小時的掃描與週報可能撞在一起,排隊避免 push 衝突
+concurrency:
+  group: scan-bull
+  cancel-in-progress: false
 
 jobs:
   scan:
@@ -34,17 +45,41 @@ jobs:
         env: &env
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python scan_bull.py --mode breakout
+        run: python scan_bull.py --mode breakout --record signals.jsonl
 
       # --always:每 4 小時一次,0 檔時也回報,讓你知道系統還活著
       - name: Scheduled early scan
         if: github.event.schedule == '30 */4 * * *'
         env: *env
-        run: python scan_bull.py --mode early --always
+        run: python scan_bull.py --mode early --always --record signals.jsonl
 
       - name: Dispatched scan
         if: github.event_name == 'workflow_dispatch'
         env: *env
         run: |
           python scan_bull.py --mode "${{ github.event.inputs.mode }}" \
-            ${{ github.event.inputs.args }}
+            --record signals.jsonl ${{ github.event.inputs.args }}
+
+      # 每次都補算報酬;只有每天那班會推播統計
+      - name: Update tracking
+        if: github.event.schedule != '15 1 * * *'
+        env: *env
+        run: python track.py
+
+      - name: Daily tracking report
+        if: github.event.schedule == '15 1 * * *'
+        env: *env
+        run: python track.py --telegram
+
+      - name: Commit signal log
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add signals.jsonl
+          git diff --staged --quiet && echo '無變動' && exit 0
+          git commit -m "訊號記錄更新 [skip ci]"
+          for i in 1 2 3 4; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            echo "push 失敗,第 $i 次重試"; sleep $((2 ** i))
+          done
+          exit 1

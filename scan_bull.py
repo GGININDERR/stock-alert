@@ -213,6 +213,7 @@ def measure(item, bar):
 
     return 'ok', dict(
         sym=inst.replace('-USDT-SWAP', ''),
+        ts=int(closed[-1][0]),                   # 訊號那根 K 棒的時間戳(毫秒)
         last=c[-1],
         bull=c[-1] > m20 > m60 > m120,           # 多頭排列
         bear=c[-1] < m20 < m60 < m120,           # 空頭排列
@@ -471,6 +472,43 @@ def build_message(hits, scanned, opt):
     return head + ''.join(blocks) + summary + tail
 
 
+# ───────────────────────── 訊號記錄(紙上交易) ─────────────────────────
+
+def record_signals(path, hits, opt):
+    """把命中的訊號附加到 jsonl,之後由 track.py 回頭算後續報酬
+
+    只記進場當下的價格與指標,不記結果。同一根 K 棒重複掃到同一檔時
+    (例如手動再跑一次)會跳過,避免同一個訊號被算兩次。
+    """
+    seen = set()
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                    seen.add((d['mode'], d['sym'], d['ts']))
+                except (ValueError, KeyError):
+                    continue
+
+    added = 0
+    with open(path, 'a', encoding='utf-8') as f:
+        for x in hits:
+            key = (opt.mode, x['sym'], x['ts'])
+            if key in seen:
+                continue
+            tag, _ = verdict(x)
+            f.write(json.dumps({
+                'mode': opt.mode, 'sym': x['sym'], 'ts': x['ts'],
+                'time': datetime.fromtimestamp(x['ts'] / 1000, TPE).isoformat(),
+                'entry': x['last'], 'volr': round(x['volr'], 2),
+                'turn': round(x['turn']), 'rsi': round(x['rsi'], 1) if x['rsi'] else None,
+                'dist20': round(x['dist20'], 2), 'ch24': round(x['ch24'], 2),
+                'tag': tag,
+            }, ensure_ascii=False) + '\n')
+            added += 1
+    print(f'記錄 {added} 筆訊號 → {path}')
+
+
 # ───────────────────────── main ─────────────────────────
 
 def parse_args(argv):
@@ -495,6 +533,8 @@ def parse_args(argv):
                    help='0 檔時也發一則「本輪無標的」,預設沒標的就靜默')
     p.add_argument('--dry', action='store_true', help='只印螢幕,不發 Telegram')
     p.add_argument('--json', default='bull_hits.json', help='結果輸出路徑')
+    p.add_argument('--record', default=None,
+                   help='把命中的訊號附加到這個 jsonl(紙上交易追蹤用)')
     opt = p.parse_args(argv)
     for k, val in MODE_DEFAULTS[opt.mode].items():   # 未指定的門檻用模式預設
         if getattr(opt, k) is None:
@@ -522,6 +562,9 @@ def main(argv=None):
     if opt.json:
         with open(opt.json, 'w', encoding='utf-8') as f:
             json.dump(hits, f, ensure_ascii=False, indent=2)
+
+    if opt.record and hits:
+        record_signals(opt.record, hits, opt)
 
     # 有標的就發;沒標的預設靜默,--always 時改發一則簡短回報
     if not opt.dry:
