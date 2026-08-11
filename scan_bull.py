@@ -292,52 +292,82 @@ def pick_classic(res, opt):
     return hits
 
 
-def pick_early(res, opt):
-    """壓縮後突破:先橫盤、帶寬收窄,價格首次站上箱頂
+def conds_early(opt):
+    """壓縮後突破:先橫盤、帶寬收窄,價格站上箱頂
 
-    抓的是「還沒噴」的位置,所以不要求漲幅,改看盤整結構是否被打破。
+    抓的是「還沒噴」的位置,所以不看漲幅,改看盤整結構是否被打破。
     """
-    return [x for x in res
-            if x['volr'] > opt.volr
-            and x['turn'] >= opt.turn
-            and between(x['box_amp'], 0, opt.box_amp)      # 前面夠橫
-            and x['bbw_pct'] is not None
-            and x['bbw_pct'] <= opt.bbw_pct                # 帶寬處於低檔
-            and x['dist_hi24'] > 0                         # 首次收在箱頂之上
-            and (x['ma_cross'] or x['above_mid'])          # 均線剛轉多或已站上中長均
-            and between(x['rsi'], 50, 65)]                 # RSI 剛過中線,不是已過熱
+    return [
+        (f"量比>{opt.volr:g}", lambda x: x['volr'] > opt.volr),
+        (f"成交額≥{opt.turn/1e6:g}M", lambda x: x['turn'] >= opt.turn),
+        (f"箱體<{opt.box_amp:g}%", lambda x: between(x['box_amp'], 0, opt.box_amp)),
+        (f"帶寬≤{opt.bbw_pct:g}", lambda x: x['bbw_pct'] is not None
+         and x['bbw_pct'] <= opt.bbw_pct),
+        ("站上箱頂", lambda x: x['dist_hi24'] > -0.5),   # 剛突破或差 0.5% 內
+        ("均線轉多", lambda x: x['ma_cross'] or x['above_mid']),
+        ("RSI 50-70", lambda x: between(x['rsi'], 50, 70)),
+    ]
 
 
-def pick_breakout(res, opt):
+def conds_breakout(opt):
     """剛啟動:三個時間尺度都在動,且貼著前高,但還沒噴完"""
-    return [x for x in res
-            if x['bull'] and x['ma20_up']
-            and x['volr'] > opt.volr
-            and x['turn'] >= opt.turn
-            and between(x['ch1'], 2, 8)
-            and between(x['ch4'], 5, 20)
-            and between(x['ch24'], 10, 35)
-            and x['dist_hi48'] >= -1                       # 突破或距前高 1% 內
-            and between(x['rsi'], 55, 75)]
+    return [
+        ("多頭排列", lambda x: x['bull']),
+        ("MA20向上", lambda x: x['ma20_up']),
+        (f"量比>{opt.volr:g}", lambda x: x['volr'] > opt.volr),
+        (f"成交額≥{opt.turn/1e6:g}M", lambda x: x['turn'] >= opt.turn),
+        ("1h +1~10%", lambda x: between(x['ch1'], 1, 10)),
+        ("4h +3~20%", lambda x: between(x['ch4'], 3, 20)),
+        ("24h +5~40%", lambda x: between(x['ch24'], 5, 40)),
+        ("距前高<2%", lambda x: x['dist_hi48'] >= -2),
+        ("RSI 50-78", lambda x: between(x['rsi'], 50, 78)),
+    ]
 
 
-def pick_chase(res, opt):
+def conds_chase(opt):
     """追高順勢:已經在噴,只挑量能夠猛、貼著前高的,供觀察回踩"""
-    return [x for x in res
-            if x['bull']
-            and x['volr'] > max(opt.volr, 3)
-            and x['turn'] >= opt.turn
-            and between(x['ch1'], 3, 12)
-            and between(x['ch24'], 20, 80)
-            and x['dist_hi48'] >= -2
-            and between(x['rsi'], 65, 85)]
+    return [
+        ("多頭排列", lambda x: x['bull']),
+        (f"量比>{max(opt.volr, 3):g}", lambda x: x['volr'] > max(opt.volr, 3)),
+        (f"成交額≥{opt.turn/1e6:g}M", lambda x: x['turn'] >= opt.turn),
+        ("1h +3~12%", lambda x: between(x['ch1'], 3, 12)),
+        ("24h +20~80%", lambda x: between(x['ch24'], 20, 80)),
+        ("距前高<2%", lambda x: x['dist_hi48'] >= -2),
+        ("RSI 65-85", lambda x: between(x['rsi'], 65, 85)),
+    ]
+
+
+def diagnose(res, opt):
+    """每個條件各自有幾檔通過,用來判斷是哪一關把標的殺光
+
+    只看單一條件的通過數(不是漏斗),因為漏斗的順序會影響數字,
+    單獨計數才看得出哪個門檻本身開得太小。
+    """
+    conds = COND_SETS.get(opt.mode)
+    if not conds:
+        return ''
+    parts = [f"{name} {sum(1 for x in res if fn(x))}" for name, fn in conds(opt)]
+    return ' ｜ '.join(parts)
+
+
+COND_SETS = {
+    'early': conds_early,
+    'breakout': conds_breakout,
+    'chase': conds_chase,
+}
+
+
+def by_conds(res, opt):
+    """所有條件都成立才留下"""
+    conds = COND_SETS[opt.mode](opt)
+    return [x for x in res if all(fn(x) for _, fn in conds)]
 
 
 MODES = {
     'classic': pick_classic,
-    'early': pick_early,
-    'breakout': pick_breakout,
-    'chase': pick_chase,
+    'early': by_conds,
+    'breakout': by_conds,
+    'chase': by_conds,
 }
 
 MODE_DESC = {
@@ -350,9 +380,9 @@ MODE_DESC = {
 # 各模式的預設門檻(未在命令列指定時採用)
 MODE_DEFAULTS = {
     'classic': dict(turn=DEF_TURNOVER, volr=2.0),
-    'early': dict(turn=5e6, volr=2.0),
-    'breakout': dict(turn=5e6, volr=2.0),
-    'chase': dict(turn=1e7, volr=3.0),
+    'early': dict(turn=1e6, volr=2.0),
+    'breakout': dict(turn=2e6, volr=2.0),
+    'chase': dict(turn=5e6, volr=3.0),
 }
 
 
@@ -452,10 +482,10 @@ def parse_args(argv):
                    help='24h 成交額下限 USDT,未指定則用該模式預設值')
     p.add_argument('--volr', type=float, default=None,
                    help='量比門檻,未指定則用該模式預設值')
-    p.add_argument('--box-amp', type=float, default=15.0,
-                   help='early 模式:近 24 根箱體振幅上限 %%,預設 15')
-    p.add_argument('--bbw-pct', type=float, default=0.25,
-                   help='early 模式:布林帶寬百分位上限,預設 0.25(近 90 根最窄的四分之一)')
+    p.add_argument('--box-amp', type=float, default=20.0,
+                   help='early 模式:近 24 根箱體振幅上限 %%,預設 20')
+    p.add_argument('--bbw-pct', type=float, default=0.35,
+                   help='early 模式:布林帶寬百分位上限,預設 0.35(近 90 根最窄的三成五)')
     p.add_argument('--ch1', type=float, default=DEF_CH1, help='1 根 K 棒漲幅門檻 %%')
     p.add_argument('--ch4', type=float, default=DEF_CH4, help='4 根 K 棒漲幅門檻 %%')
     p.add_argument('--max-dist', type=float, default=None,
@@ -483,6 +513,9 @@ def main(argv=None):
     print(f"第一輪取得 {st['first']},補抓 {st['recovered']},"
           f"K棒不足 {st['short']},仍未取得 {st['lost']}")
     print(f'掃描 {len(res)} 檔,符合 {len(hits)} 檔')
+    detail = diagnose(res, opt)          # 各條件單獨的通過數,用來調門檻
+    if detail:
+        print('各條件通過數:', detail)
     for x in hits:
         print(line_text(x))
 
