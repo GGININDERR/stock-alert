@@ -284,13 +284,10 @@ def between(x, lo, hi):
 def pick_classic(res, opt):
     """原始版:均線多頭排列 + 量比放大 + 有動能"""
     key = 'bear' if opt.short else 'bull'
-    hits = [x for x in res
+    return [x for x in res
             if x[key]
             and x['volr'] > opt.volr
             and (abs(x['ch1']) > opt.ch1 or abs(x['ch4']) > opt.ch4)]
-    if opt.max_dist is not None:
-        hits = [x for x in hits if abs(x['dist20']) < opt.max_dist]
-    return hits
 
 
 def conds_early(opt):
@@ -300,7 +297,6 @@ def conds_early(opt):
     """
     return [
         (f"量比>{opt.volr:g}", lambda x: x['volr'] > opt.volr),
-        (f"成交額≥{opt.turn/1e6:g}M", lambda x: x['turn'] >= opt.turn),
         (f"箱體<{opt.box_amp:g}%", lambda x: between(x['box_amp'], 0, opt.box_amp)),
         (f"帶寬≤{opt.bbw_pct:g}", lambda x: x['bbw_pct'] is not None
          and x['bbw_pct'] <= opt.bbw_pct),
@@ -316,7 +312,6 @@ def conds_breakout(opt):
         ("多頭排列", lambda x: x['bull']),
         ("MA20向上", lambda x: x['ma20_up']),
         (f"量比>{opt.volr:g}", lambda x: x['volr'] > opt.volr),
-        (f"成交額≥{opt.turn/1e6:g}M", lambda x: x['turn'] >= opt.turn),
         ("1h +1~10%", lambda x: between(x['ch1'], 1, 10)),
         ("4h +3~20%", lambda x: between(x['ch4'], 3, 20)),
         ("24h +5~40%", lambda x: between(x['ch24'], 5, 40)),
@@ -330,7 +325,6 @@ def conds_chase(opt):
     return [
         ("多頭排列", lambda x: x['bull']),
         (f"量比>{max(opt.volr, 3):g}", lambda x: x['volr'] > max(opt.volr, 3)),
-        (f"成交額≥{opt.turn/1e6:g}M", lambda x: x['turn'] >= opt.turn),
         ("1h +3~12%", lambda x: between(x['ch1'], 3, 12)),
         ("24h +20~80%", lambda x: between(x['ch24'], 20, 80)),
         ("距前高<2%", lambda x: x['dist_hi48'] >= -2),
@@ -389,6 +383,8 @@ MODE_DEFAULTS = {
 
 def pick(res, opt):
     hits = MODES[opt.mode](res, opt)
+    if opt.max_dist is not None:       # 通用後置過濾,四種模式都適用
+        hits = [x for x in hits if abs(x['dist20']) < opt.max_dist]
     hits.sort(key=lambda x: -x['volr'])           # 量比大的排前面
     return hits
 
@@ -539,6 +535,17 @@ def parse_args(argv):
     for k, val in MODE_DEFAULTS[opt.mode].items():   # 未指定的門檻用模式預設
         if getattr(opt, k) is None:
             setattr(opt, k, val)
+
+    # 只有 classic 看得懂這幾個參數。與其默默忽略讓人以為有生效,不如直接報錯。
+    if opt.mode != 'classic':
+        used = [flag for flag, on in (
+            ('--short', opt.short),
+            ('--ch1', opt.ch1 != DEF_CH1),
+            ('--ch4', opt.ch4 != DEF_CH4),
+        ) if on]
+        if used:
+            p.error(f"{'、'.join(used)} 只適用於 --mode classic;"
+                    f"{opt.mode} 模式的方向與漲幅區間寫在模式條件裡")
     return opt
 
 

@@ -71,20 +71,37 @@ def fill(rows, now_ms):
         table = closes_by_ts(sym)
         if not table:
             continue
+        oldest = min(table)          # K 線只涵蓋近 200 根,更舊的查不到
         for r in items:
             for h in HORIZONS:
                 key = f'ret{h}'
                 if key in r or now_ms < r['ts'] + h * HOUR_MS:
                     continue
-                px = table.get(r['ts'] + h * HOUR_MS)
+                target = r['ts'] + h * HOUR_MS
+                px = table.get(target)
                 if px:
                     r[key] = round((px / r['entry'] - 1) * 100, 2)
+                    filled += 1
+                elif target < oldest:
+                    r[key] = None    # 已超出可查範圍,標記後不再重試
                     filled += 1
     return filled
 
 
+def dedup(rows):
+    """同一根 K 棒的同一檔可能被多個模式同時掃到,整體統計只算一次"""
+    seen, out = set(), []
+    for r in rows:
+        key = (r['sym'], r['ts'])
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
 def stats(vals):
     """回傳 (筆數, 平均, 中位數, 勝率%)"""
+    vals = [v for v in vals if v is not None]
     if not vals:
         return 0, None, None, None
     s = sorted(vals)
@@ -97,7 +114,7 @@ def group_report(rows, keyfn, title):
     """依 keyfn 分組,列出各組 24h 的表現"""
     groups = defaultdict(list)
     for r in rows:
-        if 'ret24' in r:
+        if r.get('ret24') is not None:
             groups[keyfn(r)].append(r['ret24'])
     if not groups:
         return []
@@ -123,8 +140,11 @@ def volr_bucket(r):
 
 def report(rows):
     lines = []
-    done = [r for r in rows if 'ret24' in r]
-    lines.append(f'訊號 {len(rows)} 筆,已滿 24 小時 {len(done)} 筆')
+    uniq = dedup(rows)                       # 整體表現用去重後的樣本
+    done = [r for r in uniq if r.get('ret24') is not None]
+    dup = len(rows) - len(uniq)
+    extra = f'(去除跨模式重複 {dup} 筆)' if dup else ''
+    lines.append(f'訊號 {len(rows)} 筆{extra},已滿 24 小時 {len(done)} 筆')
     if rows:
         first = min(r['time'] for r in rows)[:16].replace('T', ' ')
         last = max(r['time'] for r in rows)[:16].replace('T', ' ')
@@ -132,7 +152,7 @@ def report(rows):
 
     lines.append('\n整體表現:')
     for h in HORIZONS:
-        n, avg, med, win = stats([r[f'ret{h}'] for r in rows if f'ret{h}' in r])
+        n, avg, med, win = stats([r.get(f'ret{h}') for r in uniq])
         if n:
             net = avg - FEE_PCT
             lines.append(f'  {h:2}h 後  {n:3} 筆  平均 {avg:+6.2f}%  '
@@ -148,7 +168,7 @@ def report(rows):
 
 
 def build_telegram(text, rows):
-    done = sum(1 for r in rows if 'ret24' in r)
+    done = sum(1 for r in dedup(rows) if r.get('ret24') is not None)
     head = '📈 <b>訊號追蹤週報</b>\n'
     warn = ''
     if done < 30:
