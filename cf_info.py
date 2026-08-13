@@ -14,10 +14,32 @@ import urllib.request
 API = 'https://api.cloudflare.com/client/v4/'
 
 
+def token():
+    """取出 Token 並檢查格式
+
+    Cloudflare Token 只會是英數字、底線與半形連字號。複製時常被輸入法把
+    '-' 換成全形破折號,或黏到前後空白;直接送出去只會得到看不懂的編碼
+    錯誤,所以先擋下來講清楚。
+    """
+    t = os.environ.get('CLOUDFLARE_API_TOKEN', '').strip()
+    if not t:
+        raise SystemExit('CLOUDFLARE_API_TOKEN 沒設定')
+    bad = [(i, c) for i, c in enumerate(t) if not (c.isascii() and (c.isalnum() or c in '-_'))]
+    if bad:
+        i, c = bad[0]
+        raise SystemExit(
+            f'Token 第 {i + 1} 個字元是 {c!r}(U+{ord(c):04X}),不是合法字元。\n'
+            f'Cloudflare Token 只會有英數字、底線 _ 與半形連字號 -。\n'
+            f'常見原因:複製時被自動換成全形破折號「—」,或複製到多餘的字。\n'
+            f'請重新複製一次 Token 並更新 CLOUDFLARE_API_TOKEN。'
+        )
+    return t
+
+
 def api(path):
     req = urllib.request.Request(
         API + path,
-        headers={'Authorization': f"Bearer {os.environ['CLOUDFLARE_API_TOKEN']}"},
+        headers={'Authorization': f'Bearer {token()}'},
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
