@@ -14,7 +14,10 @@
  *   WEBHOOK_SECRET      Telegram webhook secret_token(Secret)
  */
 
-const HELP_TEXT = `🤖 <b>Stark 停損機器人</b>
+// 版本:每次改 Worker 就 +1,方便確認部署到底有沒有生效
+const VERSION = '2026-08-13 幣圈指令 /scan /stats';
+
+const HELP_TEXT = `🤖 <b>Stark 停損機器人</b>  <i>(v2 幣圈版)</i>
 
 <b>查詢類</b>
 /check  或 /check_all — 檢查台股 + 美股(停損 + 停利)
@@ -82,7 +85,12 @@ export default {
   async fetch(request, env) {
     // 健康檢查(瀏覽器打開會看到 OK)
     if (request.method === 'GET') {
-      return new Response('Stark TG Bot Worker is running ✅', { status: 200 });
+      // 版本字串:用瀏覽器打開 Worker 網址就知道部署的是哪一版,
+      // 不必靠打指令去猜。改動 Worker 時記得一起更新。
+      return new Response(
+        `Stark TG Bot Worker is running ✅\nversion: ${VERSION}`,
+        { status: 200 }
+      );
     }
     if (request.method !== 'POST') {
       return new Response('Method not allowed', { status: 405 });
