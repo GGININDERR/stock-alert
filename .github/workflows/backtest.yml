@@ -3,14 +3,12 @@ name: Backtest
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: '模式: breakout / early / chase / classic'
-        required: false
-        default: 'breakout'
       args:
-        description: '額外參數,例如: --top 100 --bars 2000 --sweep volr 1.5 2 3'
+        description: >-
+          預設一次跑完三種模式 + 量比掃描 + 分期間。
+          想單獨跑某一種就填 --mode early;其他參數如 --top 100 --bars 2000
         required: false
-        default: ''
+        default: '--full --bars 3000'
 
 jobs:
   backtest:
@@ -31,9 +29,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python backtest.py --mode "${{ github.event.inputs.mode }}" \
-            --telegram ${{ github.event.inputs.args }}
+        run: python backtest.py --telegram ${{ github.event.inputs.args }}
 
       - uses: actions/upload-artifact@v4
         if: always()
