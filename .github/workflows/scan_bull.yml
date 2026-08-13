@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '模式: classic / early / breakout / chase'
+        description: '模式: classic / early / breakout / chase / report(只出統計)'
         required: false
         default: 'classic'
       args:
@@ -53,16 +53,28 @@ jobs:
         env: *env
         run: python scan_bull.py --mode early --always --record signals.jsonl
 
+      # mode=report 時只出統計,不掃描(Telegram 的 /stats 走這條)
       - name: Dispatched scan
-        if: github.event_name == 'workflow_dispatch'
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && github.event.inputs.mode != 'report'
         env: *env
         run: |
           python scan_bull.py --mode "${{ github.event.inputs.mode }}" \
             --record signals.jsonl ${{ github.event.inputs.args }}
 
-      # 每次都補算報酬;只有每天那班會推播統計
+      - name: Dispatched report
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && github.event.inputs.mode == 'report'
+        env: *env
+        run: python track.py --telegram
+
+      # 每次都補算報酬;只有每天那班與 /stats 會推播統計
       - name: Update tracking
-        if: github.event.schedule != '15 1 * * *'
+        if: >-
+          github.event.schedule != '15 1 * * *'
+          && github.event.inputs.mode != 'report'
         env: *env
         run: python track.py
 
