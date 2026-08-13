@@ -31,6 +31,7 @@ const HELP_TEXT = `🤖 <b>Stark 停損機器人</b>
   例:<code>/del TW 2330</code>
 /sold &lt;TW|US&gt; &lt;代碼&gt; &lt;股數&gt; — 賣出 N 股
   例:<code>/sold TW 2330 500</code>
+/clear CONFIRM — 一次清空全部持股(不可復原)
 
 每個交易日收盤後也會自動檢查推播。`;
 
@@ -99,6 +100,22 @@ export default {
     if (COMMAND_TABLE[firstToken]) {
       const { cmd, market } = COMMAND_TABLE[firstToken];
       await ackAndDispatch(env, { command: cmd, market, args: '', ackLabel: prettyLabel(firstToken) });
+      return new Response('ok');
+    }
+
+    // /clear — 清空全部持股,沒有市場參數,且一定要 CONFIRM
+    if (firstToken === '/clear') {
+      if ((tokens[1] || '').toUpperCase() !== 'CONFIRM') {
+        await sendMessage(
+          env,
+          '⚠️ <b>這會刪掉全部持股</b>,無法復原。\n' +
+          '確定的話請打:<code>/clear CONFIRM</code>'
+        );
+        return new Response('ok');
+      }
+      await ackAndDispatch(env, {
+        command: 'clear', market: 'ALL', args: 'CONFIRM', ackLabel: '清空全部持股',
+      });
       return new Response('ok');
     }
 
