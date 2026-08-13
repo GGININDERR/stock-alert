@@ -33,7 +33,33 @@ const HELP_TEXT = `🤖 <b>Stark 停損機器人</b>
   例:<code>/sold TW 2330 500</code>
 /clear CONFIRM — 一次清空全部持股(不可復原)
 
-每個交易日收盤後也會自動檢查推播。`;
+<b>幣圈掃描(OKX USDT 永續)</b>
+/scan — 立刻掃一次(預設 breakout:剛啟動)
+/scan early — 壓縮後突破,還沒噴的位置
+/scan chase — 追高順勢,供觀察回踩
+/scan classic — 最寬鬆的一組
+/stats — 訊號追蹤統計(這些條件到底準不準)
+
+<b>自動排程</b>
+台股 13:35、美股 21:05 收盤後自動檢查持股。
+幣圈每小時掃 breakout、每 4 小時掃 early,掃到才推播;
+每天 09:15 推一次訊號追蹤統計。`;
+
+// /scan 後面可接的模式
+const SCAN_MODES = {
+  '': 'breakout',
+  'breakout': 'breakout',
+  'early': 'early',
+  'chase': 'chase',
+  'classic': 'classic',
+};
+
+const SCAN_LABEL = {
+  breakout: '剛啟動掃描',
+  early: '壓縮後突破掃描',
+  chase: '追高順勢掃描',
+  classic: '寬鬆版掃描',
+};
 
 // 指令對應:[command, default_market, parser]
 // parser 從 cmdText 餘下 tokens 拆出 (market, args[])
@@ -93,6 +119,38 @@ export default {
     // /help /start
     if (firstToken === '/help' || firstToken === '/start') {
       await sendMessage(env, HELP_TEXT);
+      return new Response('ok');
+    }
+
+    // /scan [模式] — 幣圈掃描
+    if (firstToken === '/scan') {
+      const key = (tokens[1] || '').toLowerCase();
+      const mode = SCAN_MODES[key];
+      if (!mode) {
+        await sendMessage(
+          env,
+          `❌ 沒有「${tokens[1]}」這個模式。可用:` +
+          `<code>breakout</code>(預設) <code>early</code> ` +
+          `<code>chase</code> <code>classic</code>`
+        );
+        return new Response('ok');
+      }
+      await dispatch(env, {
+        workflow: 'scan_bull.yml',
+        inputs: { mode, args: '' },
+        ackLabel: SCAN_LABEL[mode],
+        note: '沒掃到標的就不會再有訊息,約 30 秒',
+      });
+      return new Response('ok');
+    }
+
+    // /stats — 訊號追蹤統計
+    if (firstToken === '/stats') {
+      await dispatch(env, {
+        workflow: 'scan_bull.yml',
+        inputs: { mode: 'report', args: '' },
+        ackLabel: '訊號追蹤統計',
+      });
       return new Response('ok');
     }
 
@@ -159,11 +217,22 @@ function prettyLabel(token) {
   }[token] || token;
 }
 
+// 股票指令:固定觸發 stock_check.yml
 async function ackAndDispatch(env, { command, market, args, ackLabel }) {
-  await sendMessage(env, `⏳ 收到指令,執行 <b>${ackLabel}</b> 中...`);
+  return dispatch(env, {
+    workflow: 'stock_check.yml',
+    inputs: { command, market, args },
+    ackLabel,
+  });
+}
+
+// 通用觸發:指定 workflow 檔名與 inputs
+async function dispatch(env, { workflow, inputs, ackLabel, note }) {
+  const tail = note ? `\n<i>${note}</i>` : '';
+  await sendMessage(env, `⏳ 收到指令,執行 <b>${ackLabel}</b> 中...${tail}`);
 
   const trigger = await fetch(
-    `https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/stock_check.yml/dispatches`,
+    `https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/${workflow}/dispatches`,
     {
       method: 'POST',
       headers: {
@@ -172,10 +241,7 @@ async function ackAndDispatch(env, { command, market, args, ackLabel }) {
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'cf-worker-tg-bot',
       },
-      body: JSON.stringify({
-        ref: 'main',
-        inputs: { command, market, args },
-      }),
+      body: JSON.stringify({ ref: 'main', inputs }),
     }
   );
 
