@@ -213,6 +213,7 @@ def measure(item, bar):
 
     return 'ok', dict(
         sym=inst.replace('-USDT-SWAP', ''),
+        ts=int(closed[-1][0]),                   # 訊號那根 K 棒的時間戳(毫秒)
         last=c[-1],
         bull=c[-1] > m20 > m60 > m120,           # 多頭排列
         bear=c[-1] < m20 < m60 < m120,           # 空頭排列
@@ -283,13 +284,10 @@ def between(x, lo, hi):
 def pick_classic(res, opt):
     """原始版:均線多頭排列 + 量比放大 + 有動能"""
     key = 'bear' if opt.short else 'bull'
-    hits = [x for x in res
+    return [x for x in res
             if x[key]
             and x['volr'] > opt.volr
             and (abs(x['ch1']) > opt.ch1 or abs(x['ch4']) > opt.ch4)]
-    if opt.max_dist is not None:
-        hits = [x for x in hits if abs(x['dist20']) < opt.max_dist]
-    return hits
 
 
 def conds_early(opt):
@@ -299,7 +297,6 @@ def conds_early(opt):
     """
     return [
         (f"量比>{opt.volr:g}", lambda x: x['volr'] > opt.volr),
-        (f"成交額≥{opt.turn/1e6:g}M", lambda x: x['turn'] >= opt.turn),
         (f"箱體<{opt.box_amp:g}%", lambda x: between(x['box_amp'], 0, opt.box_amp)),
         (f"帶寬≤{opt.bbw_pct:g}", lambda x: x['bbw_pct'] is not None
          and x['bbw_pct'] <= opt.bbw_pct),
@@ -315,7 +312,6 @@ def conds_breakout(opt):
         ("多頭排列", lambda x: x['bull']),
         ("MA20向上", lambda x: x['ma20_up']),
         (f"量比>{opt.volr:g}", lambda x: x['volr'] > opt.volr),
-        (f"成交額≥{opt.turn/1e6:g}M", lambda x: x['turn'] >= opt.turn),
         ("1h +1~10%", lambda x: between(x['ch1'], 1, 10)),
         ("4h +3~20%", lambda x: between(x['ch4'], 3, 20)),
         ("24h +5~40%", lambda x: between(x['ch24'], 5, 40)),
@@ -329,7 +325,6 @@ def conds_chase(opt):
     return [
         ("多頭排列", lambda x: x['bull']),
         (f"量比>{max(opt.volr, 3):g}", lambda x: x['volr'] > max(opt.volr, 3)),
-        (f"成交額≥{opt.turn/1e6:g}M", lambda x: x['turn'] >= opt.turn),
         ("1h +3~12%", lambda x: between(x['ch1'], 3, 12)),
         ("24h +20~80%", lambda x: between(x['ch24'], 20, 80)),
         ("距前高<2%", lambda x: x['dist_hi48'] >= -2),
@@ -388,6 +383,8 @@ MODE_DEFAULTS = {
 
 def pick(res, opt):
     hits = MODES[opt.mode](res, opt)
+    if opt.max_dist is not None:       # 通用後置過濾,四種模式都適用
+        hits = [x for x in hits if abs(x['dist20']) < opt.max_dist]
     hits.sort(key=lambda x: -x['volr'])           # 量比大的排前面
     return hits
 
@@ -471,6 +468,43 @@ def build_message(hits, scanned, opt):
     return head + ''.join(blocks) + summary + tail
 
 
+# ───────────────────────── 訊號記錄(紙上交易) ─────────────────────────
+
+def record_signals(path, hits, opt):
+    """把命中的訊號附加到 jsonl,之後由 track.py 回頭算後續報酬
+
+    只記進場當下的價格與指標,不記結果。同一根 K 棒重複掃到同一檔時
+    (例如手動再跑一次)會跳過,避免同一個訊號被算兩次。
+    """
+    seen = set()
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                    seen.add((d['mode'], d['sym'], d['ts']))
+                except (ValueError, KeyError):
+                    continue
+
+    added = 0
+    with open(path, 'a', encoding='utf-8') as f:
+        for x in hits:
+            key = (opt.mode, x['sym'], x['ts'])
+            if key in seen:
+                continue
+            tag, _ = verdict(x)
+            f.write(json.dumps({
+                'mode': opt.mode, 'sym': x['sym'], 'ts': x['ts'],
+                'time': datetime.fromtimestamp(x['ts'] / 1000, TPE).isoformat(),
+                'entry': x['last'], 'volr': round(x['volr'], 2),
+                'turn': round(x['turn']), 'rsi': round(x['rsi'], 1) if x['rsi'] else None,
+                'dist20': round(x['dist20'], 2), 'ch24': round(x['ch24'], 2),
+                'tag': tag,
+            }, ensure_ascii=False) + '\n')
+            added += 1
+    print(f'記錄 {added} 筆訊號 → {path}')
+
+
 # ───────────────────────── main ─────────────────────────
 
 def parse_args(argv):
@@ -495,10 +529,23 @@ def parse_args(argv):
                    help='0 檔時也發一則「本輪無標的」,預設沒標的就靜默')
     p.add_argument('--dry', action='store_true', help='只印螢幕,不發 Telegram')
     p.add_argument('--json', default='bull_hits.json', help='結果輸出路徑')
+    p.add_argument('--record', default=None,
+                   help='把命中的訊號附加到這個 jsonl(紙上交易追蹤用)')
     opt = p.parse_args(argv)
     for k, val in MODE_DEFAULTS[opt.mode].items():   # 未指定的門檻用模式預設
         if getattr(opt, k) is None:
             setattr(opt, k, val)
+
+    # 只有 classic 看得懂這幾個參數。與其默默忽略讓人以為有生效,不如直接報錯。
+    if opt.mode != 'classic':
+        used = [flag for flag, on in (
+            ('--short', opt.short),
+            ('--ch1', opt.ch1 != DEF_CH1),
+            ('--ch4', opt.ch4 != DEF_CH4),
+        ) if on]
+        if used:
+            p.error(f"{'、'.join(used)} 只適用於 --mode classic;"
+                    f"{opt.mode} 模式的方向與漲幅區間寫在模式條件裡")
     return opt
 
 
@@ -522,6 +569,9 @@ def main(argv=None):
     if opt.json:
         with open(opt.json, 'w', encoding='utf-8') as f:
             json.dump(hits, f, ensure_ascii=False, indent=2)
+
+    if opt.record and hits:
+        record_signals(opt.record, hits, opt)
 
     # 有標的就發;沒標的預設靜默,--always 時改發一則簡短回報
     if not opt.dry:
