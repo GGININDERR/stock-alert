@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: '指令: check / list / price / add / del / sold'
+        description: '指令: check / list / price / add / del / sold / clear'
         required: false
         default: 'check'
       market:
@@ -17,7 +17,7 @@ on:
         required: false
         default: 'ALL'
       args:
-        description: '其他參數,空白分隔(price/add/del/sold 用)'
+        description: '其他參數,空白分隔(price/add/del/sold 用;clear 需帶 CONFIRM)'
         required: false
         default: ''
 
@@ -63,7 +63,7 @@ jobs:
             list)
               python check_stocks.py list
               ;;
-            price|add|del|delete|sold)
+            price|add|del|delete|sold|clear)
               python check_stocks.py "$CMD" "$MARKET" $ARGS
               ;;
             *)

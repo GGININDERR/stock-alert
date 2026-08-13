@@ -10,6 +10,7 @@ CLI 用法:
   python check_stocks.py add TW 2330 950 1000  # 新增持股(市場 代碼 成本 股數)
   python check_stocks.py del TW 2330           # 刪除持股
   python check_stocks.py sold TW 2330 500      # 賣出 N 股(自動扣減)
+  python check_stocks.py clear ALL CONFIRM     # 清空全部持股(需 CONFIRM)
 
 環境變數:
   TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SPREADSHEET_ID, GOOGLE_CREDENTIALS
@@ -403,6 +404,48 @@ def cmd_del(market, code):
         send_telegram(_write_hint() + f"\n\n錯誤:{e}")
 
 
+def cmd_clear(confirmed):
+    """清空全部持股(只留標題列)。誤觸代價太大,一定要帶 CONFIRM。"""
+    if not confirmed:
+        send_telegram(
+            "⚠️ <b>這會刪掉全部持股</b>,無法復原。\n"
+            "確定的話請打:<code>/clear CONFIRM</code>"
+        )
+        return
+
+    try:
+        ws = get_worksheet(write=True)
+    except Exception as e:
+        send_telegram(_write_hint() + f"\n\n錯誤:{e}"); return
+
+    try:
+        records = ws.get_all_records()
+        if not records:
+            send_telegram("📭 持股清單本來就是空的"); return
+        # 刪之前先把還原用的 /add 指令留一份(TG + Actions log)
+        backup = []
+        for row in records:
+            market = str(row.get('市場', '')).strip()
+            code = str(row.get('代碼', '')).strip()
+            name = str(row.get('名稱', '')).strip()
+            backup.append(
+                f"/add {market} {code} {row.get('成本均價')} "
+                f"{row.get('持股數量')} {name}".strip()
+            )
+        print('=== 清空前備份 ===')
+        for line in backup:
+            print(line)
+
+        ws.delete_rows(2, len(records) + 1)
+        send_telegram(
+            f"🗑 已清空全部持股(共 {len(records)} 檔),標題列保留。\n\n"
+            "<b>還原用指令</b>(要復原就把下面貼回來):\n"
+            "<code>" + '\n'.join(backup) + "</code>"
+        )
+    except Exception as e:
+        send_telegram(_write_hint() + f"\n\n錯誤:{e}")
+
+
 def cmd_sold(market, code, n_shares):
     market = market.upper()
     try:
@@ -462,7 +505,7 @@ def cmd_whoami():
             f"<i>(點上面那串可以一鍵複製)</i>\n\n"
             f"<b>Project:</b> <code>{project}</code>\n\n"
             "──────────\n"
-            "🔧 <b>開放寫入步驟</b>(用 /add /del /sold 必做):\n"
+            "🔧 <b>開放寫入步驟</b>(用 /add /del /sold /clear 必做):\n"
             "1. 點 ① 打開 Sheet\n"
             "2. 右上角藍色「共用」按鈕\n"
             "3. 貼上 ② 的 email,權限選「<b>編輯者</b>」\n"
@@ -512,6 +555,9 @@ def main():
             if len(rest) < 3:
                 send_telegram("❌ 用法:<code>/sold TW 2330 500</code>"); return
             cmd_sold(rest[0], rest[1], rest[2])
+        elif cmd == 'clear':
+            # rest 可能是 ['ALL', 'CONFIRM'] 或只有 ['CONFIRM']
+            cmd_clear(any(a.upper() == 'CONFIRM' for a in rest))
         # 向後相容:第一個參數直接是 TW/US/ALL 時當 check
         elif cmd.upper() in ('TW', 'US', 'ALL'):
             cmd_check(cmd.upper())
