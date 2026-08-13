@@ -1,0 +1,42 @@
+name: Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '模式: breakout / early / chase / classic'
+        required: false
+        default: 'breakout'
+      args:
+        description: '額外參數,例如: --top 100 --bars 2000 --sweep volr 1.5 2 3'
+        required: false
+        default: ''
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 一致性檢查(回測與 live 指標必須相同)
+        run: python test_backtest.py
+
+      - name: 回測
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python backtest.py --mode "${{ github.event.inputs.mode }}" \
+            --telegram ${{ github.event.inputs.args }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backtest-result
+          path: backtest_result.json
