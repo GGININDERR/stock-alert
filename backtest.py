@@ -221,12 +221,15 @@ def run_one(sym, rows, opt):
     for i, x in enumerate(bars):
         if x is None:
             continue
+        # live 版在第一層就用成交額篩掉候選,回測用當下的滾動 24h 成交額
+        # 對應,否則等於少了一道門檻
+        if x['turn'] < opt.turn:
+            continue
         if conds is not None:
             ok = all(fn(x) for _, fn in conds)
         else:                                   # classic 用原本的組合條件
             ok = (x['bull'] and x['volr'] > opt.volr
-                  and (abs(x['ch1']) > opt.ch1 or abs(x['ch4']) > opt.ch4)
-                  and x['turn'] >= opt.turn)
+                  and (abs(x['ch1']) > opt.ch1 or abs(x['ch4']) > opt.ch4))
         if not ok:
             continue
         if opt.max_dist is not None and abs(x['dist20']) >= opt.max_dist:
@@ -240,19 +243,43 @@ def run_one(sym, rows, opt):
     return hits
 
 
+MIN_N = 20        # 少於這個筆數的分組不足以下結論,標記出來
+
+
+def line_for(vals, label):
+    """一列統計;樣本太少會標註,避免把雜訊當結論"""
+    if not vals:
+        return f'  {label}  無資料'
+    win = 100 * sum(1 for v in vals if v > 0) / len(vals)
+    warn = '  ⚠樣本不足' if len(vals) < MIN_N else ''
+    return (f'  {label}  {len(vals):5} 筆  平均 {statistics.mean(vals):+6.2f}%  '
+            f'中位 {statistics.median(vals):+6.2f}%  勝率 {win:5.1f}%  '
+            f'扣成本後 {statistics.mean(vals) - FEE_PCT:+6.2f}%{warn}')
+
+
 def summarize(hits, title):
     lines = [title]
     if not hits:
         return lines + ['  沒有任何訊號']
     for hz in HORIZONS:
         vals = [h[f'ret{hz}'] for h in hits if f'ret{hz}' in h]
-        if not vals:
-            continue
-        win = 100 * sum(1 for v in vals if v > 0) / len(vals)
-        lines.append(
-            f'  {hz:2}h  {len(vals):5} 筆  平均 {statistics.mean(vals):+6.2f}%  '
-            f'中位 {statistics.median(vals):+6.2f}%  勝率 {win:5.1f}%  '
-            f'扣成本後 {statistics.mean(vals) - FEE_PCT:+6.2f}%')
+        if vals:
+            lines.append(line_for(vals, f'{hz:2}h'))
+    return lines
+
+
+def by_period(hits, parts=3):
+    """把期間切成幾段分別看:只有某一段有效的話,代表撐不起結論"""
+    done = sorted((h for h in hits if 'ret24' in h), key=lambda h: h['ts'])
+    if len(done) < parts * 5:
+        return ['\n分期間(24h):樣本太少,不切分']
+    size = len(done) // parts
+    lines = ['\n分期間(24h):']
+    for i in range(parts):
+        seg = done[i * size:(i + 1) * size] if i < parts - 1 else done[i * size:]
+        lo = time.strftime('%m-%d', time.gmtime(seg[0]['ts'] / 1000))
+        hi = time.strftime('%m-%d', time.gmtime(seg[-1]['ts'] / 1000))
+        lines.append(line_for([h['ret24'] for h in seg], f'{lo}~{hi}'))
     return lines
 
 
@@ -267,10 +294,7 @@ def by_bucket(hits):
         groups[k].append(h['ret24'])
     lines = ['\n依量比分組(24h):']
     for k in sorted(groups, key=lambda k: -len(groups[k])):
-        vals = groups[k]
-        win = 100 * sum(1 for v in vals if v > 0) / len(vals)
-        lines.append(f'  {k:10} {len(vals):5} 筆  '
-                     f'平均 {statistics.mean(vals):+6.2f}%  勝率 {win:5.1f}%')
+        lines.append(line_for(groups[k], f'{k:10}'))
     return lines
 
 
@@ -290,6 +314,8 @@ def main(argv=None):
     p.add_argument('--short', action='store_true')
     p.add_argument('--sweep', nargs='+', default=None,
                    help='掃描某個門檻,例如:--sweep volr 1.5 2 3 4')
+    p.add_argument('--full', action='store_true',
+                   help='一次跑完:三種模式比較 + 量比掃描 + 分期間檢驗')
     p.add_argument('--telegram', action='store_true')
     opt = p.parse_args(argv if argv is not None else sys.argv[1:])
     for k, val in sb.MODE_DEFAULTS[opt.mode].items():
@@ -316,8 +342,36 @@ def main(argv=None):
             out.extend(run_one(sym, rows, o))
         return out
 
+    def with_mode(mode):
+        """複製一份設定並套用該模式的預設門檻"""
+        o = argparse.Namespace(**vars(opt))
+        o.mode = mode
+        for k, val in sb.MODE_DEFAULTS[mode].items():
+            setattr(o, k, val)
+        return o
+
     report = []
-    if opt.sweep:
+    if opt.full:
+        report.append(f'資料:{len(data)} 檔 × 最多 {opt.bars} 根 {opt.bar}')
+        best = {}
+        for mode in ('breakout', 'early', 'chase'):
+            o = with_mode(mode)
+            hits = evaluate(o)
+            report += summarize(hits, f'\n【模式 {mode}】'
+                                      f'(成交額≥{o.turn/1e6:g}M 量比>{o.volr:g})')
+            report += by_period(hits)
+            best[mode] = hits
+        report.append('\n【量比門檻掃描:breakout,只看 24h】')
+        o = with_mode('breakout')
+        for v in (2, 3, 5, 8):
+            o.volr = v
+            hits = evaluate(o)
+            vals = [h['ret24'] for h in hits if 'ret24' in h]
+            report.append(line_for(vals, f'量比>{v}'))
+        report += by_bucket(best['breakout'])
+        report.append('\n⚠️ 無停損無滑價、看不到已下架的幣,'
+                      '結果偏樂觀;樣本<20 的分組不足以下結論。')
+    elif opt.sweep:
         field, values = opt.sweep[0], [float(v) for v in opt.sweep[1:]]
         report.append(f'掃描 {field}:{values}(模式 {opt.mode})')
         for v in values:
