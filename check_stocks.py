@@ -422,8 +422,26 @@ def cmd_clear(confirmed):
         records = ws.get_all_records()
         if not records:
             send_telegram("📭 持股清單本來就是空的"); return
+        # 刪之前先把還原用的 /add 指令留一份(TG + Actions log)
+        backup = []
+        for row in records:
+            market = str(row.get('市場', '')).strip()
+            code = str(row.get('代碼', '')).strip()
+            name = str(row.get('名稱', '')).strip()
+            backup.append(
+                f"/add {market} {code} {row.get('成本均價')} "
+                f"{row.get('持股數量')} {name}".strip()
+            )
+        print('=== 清空前備份 ===')
+        for line in backup:
+            print(line)
+
         ws.delete_rows(2, len(records) + 1)
-        send_telegram(f"🗑 已清空全部持股(共 {len(records)} 檔),標題列保留。")
+        send_telegram(
+            f"🗑 已清空全部持股(共 {len(records)} 檔),標題列保留。\n\n"
+            "<b>還原用指令</b>(要復原就把下面貼回來):\n"
+            "<code>" + '\n'.join(backup) + "</code>"
+        )
     except Exception as e:
         send_telegram(_write_hint() + f"\n\n錯誤:{e}")
 
