@@ -1,0 +1,48 @@
+name: Telegram Bot
+
+# 取代 Cloudflare Worker:定時去 Telegram 收信、解析指令並執行。
+# 排程最密只能 5 分鐘,指令會延遲幾分鐘才有回應。
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tg-bot
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 收信並執行指令
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python tg_poll.py
+
+      # /scan 會寫入訊號記錄,跟排程掃描一樣要存回 repo
+      - name: Commit signal log
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add signals.jsonl
+          git diff --staged --quiet && echo '無變動' && exit 0
+          git commit -m "訊號記錄更新(指令觸發) [skip ci]"
+          for i in 1 2 3 4; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            echo "push 失敗,第 $i 次重試"; sleep $((2 ** i))
+          done
+          exit 1
