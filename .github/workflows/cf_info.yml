@@ -1,0 +1,19 @@
+name: Cloudflare Info
+
+# 一次性查詢:用已設定的 API Token 問出 Account ID 與現有 Worker 名稱,
+# 設定自動部署時就不必登入 Cloudflare 後台翻。
+on:
+  workflow_dispatch:
+
+jobs:
+  info:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 查帳號與 Worker 清單
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python cf_info.py
