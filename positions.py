@@ -113,6 +113,9 @@ def check(rows, cfg):
                 continue
             pos = position_of(r)
             pos['bars'] = 0
+            # 目標價要在重放之前算:重放會把 stop 抬到成本價或移動停利,
+            # 事後再算 R 就不是進場當下那個 R 了
+            tp1 = ex.tp1_price(pos, cfg)
             hit = None
             for b in bars:
                 if b['ts'] <= r['ts']:
@@ -144,9 +147,10 @@ def check(rows, cfg):
 
                 # 在場內的單只做展示,不把現價寫回記錄檔(下一輪就過期了)
                 last = bars[-1]['last']
-                holding.append(dict(r, held=pos['bars'], now=last,
+                holding.append(dict(r, held=pos['bars'], now=last, tp1=tp1,
                                     stop=pos['stop'],   # 可能已被保本/移動停利抬高
                                     stop_kind=pos['stop_kind'],
+                                    left=pos['left'],
                                     open_ret=round((last / r['entry'] - 1) * 100, 2)))
     return closed, holding, scaled
 
@@ -198,6 +202,59 @@ def build_message(closed, holding, scaled, show_summary):
     return ''.join(lines)
 
 
+STOP_KIND_LABEL = {
+    'init': ('🟡', '初始停損'),
+    'breakeven': ('🔵', '已保本'),
+    'trail': ('🟢', '移動停利'),
+}
+
+NEAR_STOP_PCT = 2.0     # 現價離停損只剩這個百分比,就標成快被掃出去
+
+
+def report_text(holding):
+    """/pos 查詢用:目前每一檔是「還在持倉」還是「已經逼近停損」
+
+    出場通知是事件觸發的,只在該動手時才出現;這支是隨時可問的現況表,
+    回答的是「我現在手上有什麼、停損在哪、離停損多遠」。
+    """
+    now = datetime.now(TPE).strftime('%Y-%m-%d %H:%M')
+    if not holding:
+        return (f'📋 <b>目前持倉</b>\n{now} (台北)\n\n'
+                f'<i>沒有在場內的訊號 —— 全部都已出場或尚未進場。</i>')
+
+    tot = sum(r['open_ret'] for r in holding) / len(holding)
+    lines = [f'📋 <b>目前持倉</b>\n{now} (台北)  '
+             f'<b>{len(holding)}</b> 筆在場內,平均未實現 <b>{tot:+.2f}%</b>\n'
+             f'<i>依未實現報酬由高到低排</i>\n']
+
+    for r in sorted(holding, key=lambda x: -x['open_ret']):
+        icon, kind = STOP_KIND_LABEL.get(r.get('stop_kind'), ('🟡', '持倉中'))
+        # 離停損還有多遠 —— 這是「還能不能抱」的關鍵數字,不是報酬率
+        room = (r['now'] / r['stop'] - 1) * 100 if r.get('stop') else None
+        near = room is not None and room <= NEAR_STOP_PCT
+        state = '⚠️ 逼近停損' if near else '持倉中'
+        mark = '✅' if r['open_ret'] > 0 else '❌'
+
+        lines.append(f"\n{icon} <b>{r['sym']}</b> ({r['mode']})  "
+                     f"{mark} <b>{r['open_ret']:+.2f}%</b>  {state}")
+        lines.append(f"\n進 {r['entry']:.6g} → 現 {r['now']:.6g} ｜ "
+                     f"持有 {r['held']} 根")
+        room_txt = f",離停損 {room:+.2f}%" if room is not None else ''
+        lines.append(f"\n🛑 停損 <b>{r['stop']:.6g}</b> "
+                     f"<i>({kind}){room_txt}</i>")
+        if r.get('tp1_px'):
+            lines.append(f"\n🎯 <i>第一目標 {r['tp1_px']:.6g} 已到,"
+                         f"剩 {r.get('left', 1.0):.0%} 部位</i>")
+        elif r.get('tp1'):
+            gap = (r['tp1'] / r['now'] - 1) * 100
+            lines.append(f"\n🎯 <i>目標 {r['tp1']:.6g},還差 {gap:+.2f}%</i>")
+        lines.append('\n')
+
+    lines.append('\n<i>停損價由程式依規則推算(保本與移動停利會自動上移),'
+                 '未計滑價與手續費;實際部位以你交易所為準。</i>')
+    return ''.join(lines)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description='持倉監控與出場推播')
     p.add_argument('--file', default='signals.jsonl', help='訊號記錄檔')
@@ -210,12 +267,17 @@ def main(argv=None):
     p.add_argument('--trail-atr', type=float, default=ex.DEF_TRAIL_ATR)
     p.add_argument('--no-tp', action='store_true', help='關掉停利與移動停利')
     p.add_argument('--summary', action='store_true', help='推播時附上持倉概況')
+    p.add_argument('--report', action='store_true',
+                   help='只回報目前持倉狀態(供 /pos 指令用,沒持倉也會回訊息)')
     p.add_argument('--dry', action='store_true', help='只印螢幕,不發 Telegram')
     opt = p.parse_args(argv if argv is not None else sys.argv[1:])
 
     rows = load(opt.file)
     if not rows:
         print('尚無訊號記錄')
+        # 查詢指令一定要有回音,否則使用者分不清是沒持倉還是程式掛了
+        if opt.report and not opt.dry:
+            send_telegram(report_text([]))
         return 0
 
     cfg = ex.cfg_from(opt)
@@ -232,8 +294,20 @@ def main(argv=None):
     for r in holding:
         print(f"  {r['sym']:10} 持有中 {r['open_ret']:+.2f}%  {r['held']} 根")
 
-    # 沒有出場也沒有減碼就不吵你;--summary 時仍會報一次持倉概況
     fresh = [r for r in closed if r['exit_reason'] != '資料過期']
+
+    # --report 是使用者主動問的,回持倉現況就好;剛好本輪有出場或減碼,
+    # 那是該動手的事,優先照原本的出場通知發,現況表接在後面
+    if opt.report:
+        if opt.dry:
+            print(report_text(holding))
+        else:
+            if fresh or scaled:
+                send_telegram(build_message(fresh, holding, scaled, False))
+            send_telegram(report_text(holding))
+        return 0
+
+    # 沒有出場也沒有減碼就不吵你;--summary 時仍會報一次持倉概況
     if not opt.dry and (fresh or scaled or (opt.summary and holding)):
         send_telegram(build_message(fresh, holding, scaled, opt.summary))
     return 0

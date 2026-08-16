@@ -63,6 +63,7 @@ HELP = """🤖 <b>Stark 停損機器人</b>  <i>(GitHub 版)</i>
 /scan early — 壓縮後突破,還沒噴的位置
 /scan chase — 追高順勢,供觀察回踩
 /scan classic — 最寬鬆的一組
+/pos — 目前幣圈持倉:停損價、離停損多遠、是否逼近停損
 /stats — 訊號追蹤統計(這些條件到底準不準)
 
 <b>自動排程</b>
@@ -154,6 +155,12 @@ def handle(text, dry=False):
                  f"<i>沒掃到標的就不會再有訊息</i>")
             run(['scan_bull.py', '--mode', mode, '--record', 'signals.jsonl'])
         return f'scan:{mode}'
+
+    if head in ('/pos', '/positions', '/holding'):
+        if not dry:
+            send('⏳ 收到指令,查詢<b>幣圈持倉狀態</b>中...')
+            run(['positions.py', '--report'])
+        return 'positions'
 
     if head == '/stats':
         if not dry:
