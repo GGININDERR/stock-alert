@@ -240,7 +240,7 @@ def report_text(holding):
         lines.append(f"\n進 {r['entry']:.6g} → 現 {r['now']:.6g} ｜ "
                      f"持有 {r['held']} 根")
         room_txt = f",離停損 {room:+.2f}%" if room is not None else ''
-        lines.append(f"\n🛑 停損 <b>{r['stop']:.6g}</b> "
+        lines.append(f"\n{ex.PLAN_STOP} 停損 <b>{r['stop']:.6g}</b> "
                      f"<i>({kind}){room_txt}</i>")
         if r.get('tp1_px'):
             lines.append(f"\n🎯 <i>第一目標 {r['tp1_px']:.6g} 已到,"

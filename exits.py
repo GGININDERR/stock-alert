@@ -49,6 +49,12 @@ TIME = '時間出場'
 
 REASONS = (STOP, TP1, BE, TRAIL, BOX, MA20, RSI, TIME)
 
+# 計畫用的圖示,與「已出場」的圖示刻意分開:🛑 是紅燈,擺在還沒發生的
+# 計畫旁邊會讀成「這檔別碰」;🛡 講的是這個價格在保護你,語氣才對。
+# 真的被掃出去時仍然用 🛑(見 positions.ICON),那時候紅燈是準確的。
+PLAN_STOP = '🛡'
+PLAN_TP = '🎯'
+
 # 停損價是怎麼來的,決定最後那筆出場要掛哪一個名字
 KIND_REASON = {'init': STOP, 'breakeven': BE, 'trail': TRAIL}
 
@@ -203,7 +209,7 @@ def plan_text(pos, cfg=Cfg()):
     if not pos.get('stop'):
         return '⚠️ <i>ATR 算不出來,給不了停損價,這檔建議略過</i>'
     r = risk_pct(pos)
-    lines = [f"🛑 停損 <b>{pos['stop']:.6g}</b>  <i>(-{r:.2f}%)</i>"]
+    lines = [f"{PLAN_STOP} 停損 <b>{pos['stop']:.6g}</b>  <i>(-{r:.2f}%)</i>"]
 
     invalid = []
     if pos.get('box_hi'):
@@ -214,7 +220,7 @@ def plan_text(pos, cfg=Cfg()):
     tp = tp1_price(pos, cfg)
     if tp:
         lines.append(
-            f"🎯 目標 <b>{tp:.6g}</b>  "
+            f"{PLAN_TP} 目標 <b>{tp:.6g}</b>  "
             f"<i>(+{(tp / pos['entry'] - 1) * 100:.2f}%)</i> "
             f"出 {cfg.tp1_frac:.0%},停損移到成本 {pos['entry']:.6g}")
         lines.append(f"　　<i>之後用最高價 -{cfg.trail_atr:g}×ATR 跟著跑</i>")
