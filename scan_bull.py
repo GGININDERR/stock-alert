@@ -16,6 +16,9 @@ CLI 用法:
 環境變數:
   TELEGRAM_TOKEN, TELEGRAM_CHAT_ID   (--dry 時可不設)
 
+這支只管進場。每則訊號會附上停損價與失效條件(算法在 exits.py),之後
+由 positions.py 每小時盯著,該出場時另外通知。
+
 免責:純技術面篩選,只看價格與成交量,不構成投資建議。
 """
 import argparse
@@ -28,6 +31,8 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import requests
+
+import exits
 
 OKX_TICKERS = 'https://www.okx.com/api/v5/market/tickers?instType=SWAP'
 OKX_CANDLES = 'https://www.okx.com/api/v5/market/candles?instId={inst}&bar={bar}&limit=200'
@@ -100,6 +105,22 @@ def rsi(c, n=14):
     if al == 0:
         return 100.0
     return 100 - 100 / (1 + ag / al)
+
+
+def atr(h, lo, c, n=14):
+    """Wilder ATR — 平均真實區間,用來把停損距離換算成該幣自己的波動尺度
+
+    固定百分比停損對高波動幣是雜訊、對低波動幣是重傷,所以停損距離改用
+    ATR 計價。資料不足回 None。
+    """
+    if len(c) <= n:
+        return None
+    tr = [max(h[i] - lo[i], abs(h[i] - c[i - 1]), abs(lo[i] - c[i - 1]))
+          for i in range(1, len(c))]
+    a = sum(tr[:n]) / n                      # 前 n 根先取簡單平均
+    for x in tr[n:]:                         # 之後用 Wilder 平滑
+        a = (a * (n - 1) + x) / n
+    return a
 
 
 def ema(vals, n):
@@ -215,6 +236,10 @@ def measure(item, bar):
         sym=inst.replace('-USDT-SWAP', ''),
         ts=int(closed[-1][0]),                   # 訊號那根 K 棒的時間戳(毫秒)
         last=c[-1],
+        high=h[-1], low=lo[-1],                  # 出場判定要用棒內高低,不只收盤
+        atr=atr(h, lo, c),                       # 停損距離的計價單位
+        ma20=m20, ma20_prev=prev20,              # MA20 轉弱的判定
+        box_hi=box_hi, box_lo=box_lo,            # 突破失敗的判定基準
         bull=c[-1] > m20 > m60 > m120,           # 多頭排列
         bear=c[-1] < m20 < m60 < m120,           # 空頭排列
         volr=volr,
@@ -439,6 +464,8 @@ def build_message(hits, scanned, opt):
         tag, why = verdict(x)
         thin = ('\n⚠️ <i>24h 成交額不足 1M,掛單簿薄,進出滑價會吃掉利潤</i>'
                 if thin_warn(x) else '')
+        # 進場訊號一定要附出場計畫,否則等於只給了一半
+        plan = exits.plan_text(exits.open_position(x))
         blocks.append(
             f"\n<b>{i}. {x['sym']}</b>  {x['last']:.6g}  {tag}\n"
             f"量比 <b>{x['volr']:.2f}</b>ｘ ｜ 離MA20 {x['dist20']:+.2f}%\n"
@@ -446,7 +473,8 @@ def build_message(hits, scanned, opt):
             f"12h {x['ch12']:+.2f}% ｜ 24h {x['ch24']:+.2f}%\n"
             f"24h 成交額 {x['turn']/1e6:.2f}M ｜ RSI {x['rsi']:.0f} ｜ "
             f"距前高 {x['dist_hi48']:+.2f}%\n"
-            f"→ <i>{why}</i>{thin}\n"
+            f"→ <i>{why}</i>\n"
+            f"🛑 <i>{plan}</i>{thin}\n"
         )
 
     # 本輪重點:優先挑「量比夠大且乖離乾淨」的,沒有就退回量比最大那檔
@@ -493,6 +521,9 @@ def record_signals(path, hits, opt):
             if key in seen:
                 continue
             tag, _ = verdict(x)
+            # 停損價與箱頂要在進場當下就定下來並存檔:事後再算會用到未來
+            # 資訊,而且 positions.py 也需要它們才能接手管出場
+            pos = exits.open_position(x)
             f.write(json.dumps({
                 'mode': opt.mode, 'sym': x['sym'], 'ts': x['ts'],
                 'time': datetime.fromtimestamp(x['ts'] / 1000, TPE).isoformat(),
@@ -500,6 +531,8 @@ def record_signals(path, hits, opt):
                 'turn': round(x['turn']), 'rsi': round(x['rsi'], 1) if x['rsi'] else None,
                 'dist20': round(x['dist20'], 2), 'ch24': round(x['ch24'], 2),
                 'tag': tag,
+                'stop': pos['stop'], 'box_hi': pos['box_hi'], 'atr': pos['atr'],
+                'hot': pos['hot'],
             }, ensure_ascii=False) + '\n')
             added += 1
     print(f'記錄 {added} 筆訊號 → {path}')

@@ -13,10 +13,17 @@ CLI 用法:
   python backtest.py --mode early --top 100     # 取成交額前 100 檔
   python backtest.py --mode breakout --bars 2000  # 每檔取更長的歷史
   python backtest.py --sweep volr 1.5 2 3 4     # 掃描量比門檻的影響
+  python backtest.py --sweep stop_atr 1 1.5 2 3 # 掃描停損寬度
+  python backtest.py --no-invalidate            # 只留停損,看失效出場有沒有加分
   python backtest.py --mode breakout --telegram # 結果推播
 
+出場規則沿用 exits.py(停損 + 訊號失效 + 時間出場),與實盤 positions.py
+是同一份程式碼。報表會同時列出「固定時間出場」與「帶停損出場」兩組數字,
+前者是舊口徑,留著當對照。
+
 限制:
-- 進出場都用收盤價,無停損、無滑價;手續費以固定 0.1% 估算後另列一欄
+- 無滑價;手續費以固定 0.1% 估算後另列一欄
+- 停損以棒內最低價判定,但 1H K 棒內的走勢看不到,實際可能更差
 - 只納入目前仍在交易的幣種,已下架的看不到(倖存者偏差,結果偏樂觀)
 - 24h 漲幅在 live 版取自即時報價,回測改用 24 根 K 棒前的收盤價,兩者
   在跨日時會有些微差異
@@ -28,6 +35,7 @@ import sys
 import time
 from collections import defaultdict
 
+import exits as ex
 import scan_bull as sb
 
 HORIZONS = (4, 12, 24)
@@ -161,6 +169,21 @@ def rolling_min(xs, n, offset=1):
     return out
 
 
+def atr_series(h, lo, c, n=14):
+    """Wilder ATR 的整條序列,與 scan_bull.atr 同一套平滑方式"""
+    out = [None] * len(c)
+    if len(c) <= n:
+        return out
+    tr = [0.0] + [max(h[i] - lo[i], abs(h[i] - c[i - 1]), abs(lo[i] - c[i - 1]))
+                  for i in range(1, len(c))]
+    a = sum(tr[1:n + 1]) / n
+    out[n] = a
+    for i in range(n + 1, len(c)):
+        a = (a * (n - 1) + tr[i]) / n
+        out[i] = a
+    return out
+
+
 def series(sym, rows):
     """把 K 線轉成每根一個 dict,欄位與 scan_bull.measure 的輸出一致"""
     ts = [int(k[0]) for k in rows]
@@ -180,6 +203,7 @@ def series(sym, rows):
     hh24, hh48 = rolling_max(h, 24), rolling_max(h, 48)
     box_hi, box_lo = rolling_max(h, 24), rolling_min(lo, 24)
     vbase = rolling_mean(v, 20)                # 前 20 根均量:取 i-1 的值
+    atr = atr_series(h, lo, c)
 
     out = []
     for i in range(len(rows)):
@@ -189,6 +213,10 @@ def series(sym, rows):
         turn24 = sum(quote[max(0, i - 23):i + 1])
         out.append(dict(
             sym=sym, ts=ts[i], last=c[i],
+            high=h[i], low=lo[i],
+            atr=atr[i],
+            ma20=m20[i], ma20_prev=m20[i - 1],
+            box_hi=box_hi[i], box_lo=box_lo[i],
             bull=c[i] > m20[i] > m60[i] > m120[i],
             bear=c[i] < m20[i] < m60[i] < m120[i],
             volr=v[i] / vbase[i - 1],
@@ -213,9 +241,31 @@ def series(sym, rows):
 
 # ───────────────────────── 回測 ─────────────────────────
 
+def simulate(bars, i, cfg):
+    """從第 i 根進場,逐根套用 exits 的規則,回傳出場結果
+
+    逐根走而不是直接取 N 小時後的收盤價,是因為停損會在中途觸發:先跌到
+    停損再拉回來的那些單,固定時間出場會記成賺錢,實際上早就被掃出場了。
+    走到資料尾端還沒出場的回 None(尚未結束的單不該計入統計)。
+    """
+    pos = ex.open_position(bars[i], cfg)
+    for j in range(i + 1, len(bars)):
+        b = bars[j]
+        if b is None:
+            continue
+        hit = ex.step(pos, b, cfg)
+        if hit:
+            reason, px = hit
+            return dict(exit_reason=reason, exit_ts=b['ts'],
+                        exit_ret=(px / pos['entry'] - 1) * 100,
+                        held=pos['bars'], risk=ex.risk_pct(pos))
+    return None
+
+
 def run_one(sym, rows, opt):
     """回傳這一檔的所有命中訊號(含事後報酬)"""
     bars, c = series(sym, rows)
+    cfg = ex.cfg_from(opt)
     conds = sb.COND_SETS[opt.mode](opt) if opt.mode != 'classic' else None
     hits = []
     for i, x in enumerate(bars):
@@ -239,6 +289,10 @@ def run_one(sym, rows, opt):
         for hz in HORIZONS:                     # 事後報酬,不足長度就略過
             if i + hz < len(c):
                 rec[f'ret{hz}'] = (c[i + hz] / c[i] - 1) * 100
+        # 固定時間報酬保留下來當對照組:有停損之後差多少,一眼看得出來
+        got = simulate(bars, i, cfg)
+        if got:
+            rec.update(got)
         hits.append(rec)
     return hits
 
@@ -261,10 +315,46 @@ def summarize(hits, title):
     lines = [title]
     if not hits:
         return lines + ['  沒有任何訊號']
+    lines.append('  ── 固定時間出場(無停損,舊版口徑)──')
     for hz in HORIZONS:
         vals = [h[f'ret{hz}'] for h in hits if f'ret{hz}' in h]
         if vals:
             lines.append(line_for(vals, f'{hz:2}h'))
+    lines += with_exits(hits)
+    return lines
+
+
+def with_exits(hits):
+    """帶停損與失效出場的績效,以及是被哪一種規則請出場的
+
+    出場原因的分布比報酬還重要:停損佔比過高代表停損太緊、時間出場佔比
+    過高代表規則根本沒在作用,兩種都要調參數而不是調心情。
+    """
+    done = [h for h in hits if 'exit_ret' in h]
+    if not done:
+        return ['  ── 帶停損出場:沒有已結束的單 ──']
+    vals = [h['exit_ret'] for h in done]
+    lines = ['  ── 帶停損 + 失效出場 ──', line_for(vals, '實際')]
+
+    risks = [h['risk'] for h in done if h.get('risk')]
+    held = [h['held'] for h in done]
+    if risks:
+        # 期望值以 R 計價,才不會被幾檔高波動幣的大百分比帶著跑
+        rs = [h['exit_ret'] / h['risk'] for h in done if h.get('risk')]
+        lines.append(f"  平均停損距離 {statistics.mean(risks):.2f}%  "
+                     f"平均期望值 {statistics.mean(rs):+.2f}R  "
+                     f"平均持有 {statistics.mean(held):.1f} 根")
+
+    counts = defaultdict(list)
+    for h in done:
+        counts[h['exit_reason']].append(h['exit_ret'])
+    lines.append('  出場原因:')
+    for r in ex.REASONS:
+        if r in counts:
+            v = counts[r]
+            share = 100 * len(v) / len(done)
+            lines.append(f'    {r:6} {len(v):5} 筆 ({share:4.1f}%)  '
+                         f'平均 {statistics.mean(v):+6.2f}%')
     return lines
 
 
@@ -312,6 +402,12 @@ def main(argv=None):
     p.add_argument('--ch4', type=float, default=sb.DEF_CH4)
     p.add_argument('--max-dist', type=float, default=None)
     p.add_argument('--short', action='store_true')
+    p.add_argument('--stop-atr', type=float, default=ex.DEF_STOP_ATR,
+                   help=f'停損距離 = 進場價 - N×ATR(14),預設 {ex.DEF_STOP_ATR}')
+    p.add_argument('--max-bars', type=int, default=ex.DEF_MAX_BARS,
+                   help=f'時間出場:抱滿幾根 K 棒,預設 {ex.DEF_MAX_BARS}')
+    p.add_argument('--no-invalidate', action='store_true',
+                   help='只留停損與時間出場,關掉訊號失效出場(用來看它有沒有加分)')
     p.add_argument('--sweep', nargs='+', default=None,
                    help='掃描某個門檻,例如:--sweep volr 1.5 2 3 4')
     p.add_argument('--full', action='store_true',
@@ -368,9 +464,15 @@ def main(argv=None):
             hits = evaluate(o)
             vals = [h['ret24'] for h in hits if 'ret24' in h]
             report.append(line_for(vals, f'量比>{v}'))
+        report.append('\n【停損寬度掃描:breakout,帶停損口徑】')
+        o = with_mode('breakout')
+        for k in (1.0, 1.5, 2.0, 3.0):
+            o.stop_atr = k
+            vals = [h['exit_ret'] for h in evaluate(o) if 'exit_ret' in h]
+            report.append(line_for(vals, f'{k:g}×ATR'))
         report += by_bucket(best['breakout'])
-        report.append('\n⚠️ 無停損無滑價、看不到已下架的幣,'
-                      '結果偏樂觀;樣本<20 的分組不足以下結論。')
+        report.append('\n⚠️ 無滑價、看不到已下架的幣,結果偏樂觀;'
+                      '樣本<20 的分組不足以下結論。')
     elif opt.sweep:
         field, values = opt.sweep[0], [float(v) for v in opt.sweep[1:]]
         report.append(f'掃描 {field}:{values}(模式 {opt.mode})')
