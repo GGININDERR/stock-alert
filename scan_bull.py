@@ -474,7 +474,7 @@ def build_message(hits, scanned, opt):
             f"24h 成交額 {x['turn']/1e6:.2f}M ｜ RSI {x['rsi']:.0f} ｜ "
             f"距前高 {x['dist_hi48']:+.2f}%\n"
             f"→ <i>{why}</i>\n"
-            f"🛑 <i>{plan}</i>{thin}\n"
+            f"{plan}{thin}\n"
         )
 
     # 本輪重點:優先挑「量比夠大且乖離乾淨」的,沒有就退回量比最大那檔

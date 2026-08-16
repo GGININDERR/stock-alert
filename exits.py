@@ -194,16 +194,28 @@ def step(pos, bar, cfg=Cfg()):
 
 
 def plan_text(pos, cfg=Cfg()):
-    """進場推播用的出場計畫,兩行:先講停損,再講停利"""
+    """進場推播用的出場計畫
+
+    一行一件事,每行都以「動作 + 價格」開頭:掃描結果本來就是一堆數字,
+    出場計畫若擠成一整段,真正要照著做的那兩個價格會被淹掉。順序照實際
+    會發生的先後:先停損,再失效條件,最後停利。
+    """
     if not pos.get('stop'):
-        return '出場計畫:ATR 算不出來,無法給停損價,建議略過'
+        return '⚠️ <i>ATR 算不出來,給不了停損價,這檔建議略過</i>'
     r = risk_pct(pos)
-    box = (f"、收盤跌破箱頂 {pos['box_hi']:.6g}" if pos.get('box_hi') else '')
-    out = (f"停損 <b>{pos['stop']:.6g}</b>(-{r:.2f}%){box};"
-           f"或 MA20 轉弱、RSI 由熱轉弱即出場")
+    lines = [f"🛑 停損 <b>{pos['stop']:.6g}</b>  <i>(-{r:.2f}%)</i>"]
+
+    invalid = []
+    if pos.get('box_hi'):
+        invalid.append(f"收盤跌破箱頂 {pos['box_hi']:.6g}")
+    invalid += ['MA20 轉弱', 'RSI 由熱轉弱']
+    lines.append(f"　　<i>或 {' ／ '.join(invalid)} 即出場</i>")
+
     tp = tp1_price(pos, cfg)
     if tp:
-        out += (f"\n🎯 <i>到 {tp:.6g}(+{(tp / pos['entry'] - 1) * 100:.2f}%)"
-                f"出 {cfg.tp1_frac:.0%},停損拉到成本價 {pos['entry']:.6g},"
-                f"之後用最高價 -{cfg.trail_atr:g}×ATR 跟著跑</i>")
-    return out
+        lines.append(
+            f"🎯 目標 <b>{tp:.6g}</b>  "
+            f"<i>(+{(tp / pos['entry'] - 1) * 100:.2f}%)</i> "
+            f"出 {cfg.tp1_frac:.0%},停損移到成本 {pos['entry']:.6g}")
+        lines.append(f"　　<i>之後用最高價 -{cfg.trail_atr:g}×ATR 跟著跑</i>")
+    return '\n'.join(lines)
