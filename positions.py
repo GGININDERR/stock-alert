@@ -73,12 +73,17 @@ def position_of(row):
     """把 signals.jsonl 的一列還原成 exits 認得的持倉狀態
 
     停損價與箱頂用記錄下來的值,不重算 —— 它們屬於進場當下的決定。
+
+    分批、峰值、被抬高的停損這些過程狀態不從檔案還原,因為每輪都是從
+    進場那根重新播一次,狀態自然會重建;存下來反而多一份會不同步的真相。
     """
     return {
         'sym': row['sym'], 'entry_ts': row['ts'], 'entry': row['entry'],
         'stop': row['stop'], 'box_hi': row.get('box_hi'),
         'atr': row.get('atr'), 'hot': bool(row.get('hot')),
-        'bars': row.get('held', 0),
+        'bars': 0,
+        'stop_kind': 'init', 'peak': row['entry'],
+        'left': 1.0, 'partials': [],
     }
 
 
@@ -89,7 +94,7 @@ def check(rows, cfg):
     或延遲,只看最新一根會漏掉中間已經觸發的停損,把虧損拖大。
     """
     todo = open_rows(rows)
-    closed, holding = [], []
+    closed, holding, scaled = [], [], []
     by_sym = {}
     for r in todo:
         by_sym.setdefault(r['sym'], []).append(r)
@@ -120,24 +125,51 @@ def check(rows, cfg):
                     r['exit_time'] = datetime.fromtimestamp(
                         b['ts'] / 1000, TPE).isoformat()
                     r['exit_px'] = px
-                    r['exit_ret'] = round((px / r['entry'] - 1) * 100, 2)
+                    # 報酬要含分批出掉的那半,不能只看最後一筆的價格
+                    r['exit_ret'] = round(ex.total_ret(pos, px), 2)
                     r['held'] = pos['bars']
+                    if pos['partials']:
+                        r['tp1_px'] = pos['partials'][0][1]
                     closed.append(r)
                     break
+
             if not hit:
+                # 第一目標是分批出場,單子還在場內,但你得知道要動手減碼。
+                # tp1_px 同時當作「已通知過」的標記,否則每輪都會再喊一次。
+                if pos['partials'] and not r.get('tp1_px'):
+                    _, tp_px, frac = pos['partials'][0]
+                    r['tp1_px'] = tp_px
+                    r['tp1_frac'] = frac
+                    scaled.append(dict(r, new_stop=pos['stop']))
+
                 # 在場內的單只做展示,不把現價寫回記錄檔(下一輪就過期了)
                 last = bars[-1]['last']
                 holding.append(dict(r, held=pos['bars'], now=last,
+                                    stop=pos['stop'],   # 可能已被保本/移動停利抬高
+                                    stop_kind=pos['stop_kind'],
                                     open_ret=round((last / r['entry'] - 1) * 100, 2)))
-    return closed, holding
+    return closed, holding, scaled
 
 
-ICON = {ex.STOP: '🛑', ex.BOX: '🔻', ex.MA20: '🔻', ex.RSI: '🔻', ex.TIME: '⏱'}
+ICON = {ex.STOP: '🛑', ex.BE: '🟰', ex.TRAIL: '🏃', ex.TP1: '🎯',
+        ex.BOX: '🔻', ex.MA20: '🔻', ex.RSI: '🔻', ex.TIME: '⏱'}
 
 
-def build_message(closed, holding, show_summary):
+def build_message(closed, holding, scaled, show_summary):
     now = datetime.now(TPE).strftime('%Y-%m-%d %H:%M')
-    lines = [f'🚪 <b>出場通知</b>\n{now} (台北)  本輪 <b>{len(closed)}</b> 筆出場\n']
+    head = f'本輪 <b>{len(closed)}</b> 筆出場'
+    if scaled:
+        head += f'、<b>{len(scaled)}</b> 筆到第一目標'
+    lines = [f'🚪 <b>出場通知</b>\n{now} (台北)  {head}\n']
+
+    # 分批減碼放前面:這是要你現在動手的事,已出場的只是回報
+    for r in scaled:
+        lines.append(
+            f"\n🎯 <b>{r['sym']}</b> ({r['mode']}) 到第一目標 "
+            f"{r['tp1_px']:.6g}(+{(r['tp1_px']/r['entry']-1)*100:.2f}%)\n"
+            f"建議出 {r['tp1_frac']:.0%},剩下的停損拉到 "
+            f"<b>{r['new_stop']:.6g}</b>,之後跟著最高價往上移\n")
+
     for r in closed:
         if r['exit_reason'] == '資料過期':
             continue
@@ -153,9 +185,12 @@ def build_message(closed, holding, show_summary):
     if show_summary and holding:
         lines.append(f'\n<b>仍在場內 {len(holding)} 筆</b>')
         for r in sorted(holding, key=lambda x: -(x['open_ret'])):
+            kind = {'breakeven': '(保本)', 'trail': '(移動)'}.get(
+                r.get('stop_kind'), '')
             lines.append(
                 f"\n• {r['sym']} {r['open_ret']:+.2f}%  "
-                f"現價 {r['now']:.6g} ｜ 停損 {r['stop']:.6g} ｜ {r['held']} 根")
+                f"現價 {r['now']:.6g} ｜ 停損 {r['stop']:.6g}{kind} ｜ "
+                f"{r['held']} 根")
         lines.append('\n')
 
     lines.append('\n<i>出場價為 K 棒收盤或停損價,未計滑價與手續費;'
@@ -170,6 +205,10 @@ def main(argv=None):
     p.add_argument('--max-bars', type=int, default=ex.DEF_MAX_BARS)
     p.add_argument('--no-invalidate', action='store_true',
                    help='關掉訊號失效出場,只留停損與時間出場')
+    p.add_argument('--tp1-r', type=float, default=ex.DEF_TP1_R)
+    p.add_argument('--tp1-frac', type=float, default=ex.DEF_TP1_FRAC)
+    p.add_argument('--trail-atr', type=float, default=ex.DEF_TRAIL_ATR)
+    p.add_argument('--no-tp', action='store_true', help='關掉停利與移動停利')
     p.add_argument('--summary', action='store_true', help='推播時附上持倉概況')
     p.add_argument('--dry', action='store_true', help='只印螢幕,不發 Telegram')
     opt = p.parse_args(argv if argv is not None else sys.argv[1:])
@@ -180,20 +219,23 @@ def main(argv=None):
         return 0
 
     cfg = ex.cfg_from(opt)
-    closed, holding = check(rows, cfg)
-    if closed:
+    closed, holding, scaled = check(rows, cfg)
+    if closed or scaled:
         save(opt.file, rows)
 
-    print(f'在場內 {len(holding)} 筆,本輪出場 {len(closed)} 筆')
+    print(f'在場內 {len(holding)} 筆,本輪出場 {len(closed)} 筆,'
+          f'到第一目標 {len(scaled)} 筆')
     for r in closed:
         print(f"  {r['sym']:10} {r['exit_reason']:6} {r.get('exit_ret')}%")
+    for r in scaled:
+        print(f"  {r['sym']:10} 第一目標 {r['tp1_px']:.6g} → 減碼 {r['tp1_frac']:.0%}")
     for r in holding:
         print(f"  {r['sym']:10} 持有中 {r['open_ret']:+.2f}%  {r['held']} 根")
 
-    # 沒有出場就不吵你;--summary 時仍會報一次持倉概況
+    # 沒有出場也沒有減碼就不吵你;--summary 時仍會報一次持倉概況
     fresh = [r for r in closed if r['exit_reason'] != '資料過期']
-    if not opt.dry and (fresh or (opt.summary and holding)):
-        send_telegram(build_message(fresh, holding, opt.summary))
+    if not opt.dry and (fresh or scaled or (opt.summary and holding)):
+        send_telegram(build_message(fresh, holding, scaled, opt.summary))
     return 0
 
 

@@ -152,17 +152,27 @@ def check_exits(datasets):
             seen[got['exit_reason']] += 1
             if got['held'] > ex.DEF_MAX_BARS:
                 bad.append(f"第 {i} 根持有 {got['held']} 根,超過時間出場上限")
-            # 停損出場的報酬不該優於停損價(跳空只會更差)
+            # 停損出場的報酬不該優於停損價(跳空只會更差)。停損只在還沒
+            # 減碼時才叫「停損」,減碼後會改名成保本或移動停利,所以這裡
+            # 比的一定是完整部位。
             pos = ex.open_position(bars[i])
             if got['exit_reason'] == ex.STOP and pos['stop']:
                 limit = (pos['stop'] / pos['entry'] - 1) * 100
                 if got['exit_ret'] > limit + 1e-9:
                     bad.append(f"第 {i} 根停損出場 {got['exit_ret']:.4f}% "
                                f"優於停損價 {limit:.4f}%")
+            # 保本出場代表已經在 +1R 出掉一半,剩下的打平,整筆必為正
+            if got['exit_reason'] == ex.BE and got['exit_ret'] <= 0:
+                bad.append(f"第 {i} 根保本出場卻是 {got['exit_ret']:.4f}%")
+            # 減碼過的單,停損已被抬到成本價之上,不該再賠到超過原本的 1R
+            if got.get('scaled') and got.get('risk') \
+                    and got['exit_ret'] < -got['risk']:
+                bad.append(f"第 {i} 根已減碼卻虧 {got['exit_ret']:.4f}%,"
+                           f"超過 1R({got['risk']:.4f}%)")
 
     print(f'\n出場模擬:{sum(seen.values())} 筆已結束、{unfinished} 筆未結束')
     print('  出場原因分布:', {k: v for k, v in seen.items() if v})
-    for r in (ex.STOP, ex.TIME):
+    for r in (ex.STOP, ex.TRAIL, ex.TIME):
         if not seen[r]:
             bad.append(f'測試資料從未觸發「{r}」,這條規則等於沒驗到')
     return bad

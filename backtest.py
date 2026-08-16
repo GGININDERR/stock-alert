@@ -249,6 +249,9 @@ def simulate(bars, i, cfg):
     走到資料尾端還沒出場的回 None(尚未結束的單不該計入統計)。
     """
     pos = ex.open_position(bars[i], cfg)
+    # 1R 要在進場當下記下來:停損之後會被保本與移動停利往上推,
+    # 事後再算 risk_pct 得到的是被推高後的距離,不是這筆單的風險
+    risk = ex.risk_pct(pos)
     for j in range(i + 1, len(bars)):
         b = bars[j]
         if b is None:
@@ -256,9 +259,11 @@ def simulate(bars, i, cfg):
         hit = ex.step(pos, b, cfg)
         if hit:
             reason, px = hit
+            # 報酬要把分批出掉的那半算進去,不能只看最後一筆的價格
             return dict(exit_reason=reason, exit_ts=b['ts'],
-                        exit_ret=(px / pos['entry'] - 1) * 100,
-                        held=pos['bars'], risk=ex.risk_pct(pos))
+                        exit_ret=ex.total_ret(pos, px),
+                        scaled=bool(pos['partials']),
+                        held=pos['bars'], risk=risk)
     return None
 
 
@@ -334,7 +339,7 @@ def with_exits(hits):
     if not done:
         return ['  ── 帶停損出場:沒有已結束的單 ──']
     vals = [h['exit_ret'] for h in done]
-    lines = ['  ── 帶停損 + 失效出場 ──', line_for(vals, '實際')]
+    lines = ['  ── 帶停損 + 停利 + 失效出場 ──', line_for(vals, '實際')]
 
     risks = [h['risk'] for h in done if h.get('risk')]
     held = [h['held'] for h in done]
@@ -344,6 +349,12 @@ def with_exits(hits):
         lines.append(f"  平均停損距離 {statistics.mean(risks):.2f}%  "
                      f"平均期望值 {statistics.mean(rs):+.2f}R  "
                      f"平均持有 {statistics.mean(held):.1f} 根")
+    scaled = [h for h in done if h.get('scaled')]
+    if scaled:
+        # 到得了第一目標的比例,決定停利有沒有在作用
+        lines.append(f"  觸及第一目標 {len(scaled)} 筆 "
+                     f"({100 * len(scaled) / len(done):.1f}%)  "
+                     f"平均 {statistics.mean([h['exit_ret'] for h in scaled]):+.2f}%")
 
     counts = defaultdict(list)
     for h in done:
@@ -408,6 +419,14 @@ def main(argv=None):
                    help=f'時間出場:抱滿幾根 K 棒,預設 {ex.DEF_MAX_BARS}')
     p.add_argument('--no-invalidate', action='store_true',
                    help='只留停損與時間出場,關掉訊號失效出場(用來看它有沒有加分)')
+    p.add_argument('--tp1-r', type=float, default=ex.DEF_TP1_R,
+                   help=f'第一目標:獲利達 N 個 R 出一部分,預設 {ex.DEF_TP1_R}')
+    p.add_argument('--tp1-frac', type=float, default=ex.DEF_TP1_FRAC,
+                   help=f'到第一目標時出掉的比例,預設 {ex.DEF_TP1_FRAC}')
+    p.add_argument('--trail-atr', type=float, default=ex.DEF_TRAIL_ATR,
+                   help=f'移動停利:最高價 - N×ATR,預設 {ex.DEF_TRAIL_ATR};0 = 關閉')
+    p.add_argument('--no-tp', action='store_true',
+                   help='關掉停利與移動停利,只留停損(用來看停利有沒有加分)')
     p.add_argument('--sweep', nargs='+', default=None,
                    help='掃描某個門檻,例如:--sweep volr 1.5 2 3 4')
     p.add_argument('--full', action='store_true',
@@ -464,12 +483,26 @@ def main(argv=None):
             hits = evaluate(o)
             vals = [h['ret24'] for h in hits if 'ret24' in h]
             report.append(line_for(vals, f'量比>{v}'))
-        report.append('\n【停損寬度掃描:breakout,帶停損口徑】')
+        report.append('\n【停損寬度掃描:breakout,實際出場口徑】')
         o = with_mode('breakout')
         for k in (1.0, 1.5, 2.0, 3.0):
             o.stop_atr = k
             vals = [h['exit_ret'] for h in evaluate(o) if 'exit_ret' in h]
             report.append(line_for(vals, f'{k:g}×ATR'))
+
+        # 停利到底有沒有加分,要跟「只有停損」的版本比才知道
+        report.append('\n【停利設定比較:breakout】')
+        for label, kw in (('關掉停利', {'no_tp': True}),
+                          ('1R 出半 + 2ATR 跟', {}),
+                          ('1R 出半 + 3ATR 跟', {'trail_atr': 3.0}),
+                          ('1.5R 出半 + 2ATR 跟', {'tp1_r': 1.5}),
+                          ('1R 全出', {'tp1_frac': 1.0})):
+            o = with_mode('breakout')
+            o.no_tp = False
+            for k, v in kw.items():
+                setattr(o, k, v)
+            vals = [h['exit_ret'] for h in evaluate(o) if 'exit_ret' in h]
+            report.append(line_for(vals, f'{label:16}'))
         report += by_bucket(best['breakout'])
         report.append('\n⚠️ 無滑價、看不到已下架的幣,結果偏樂觀;'
                       '樣本<20 的分組不足以下結論。')
