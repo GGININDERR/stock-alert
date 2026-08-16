@@ -138,6 +138,35 @@ def volr_bucket(r):
     return '量比 2-3'
 
 
+def exit_report(rows):
+    """實際出場的成績,與上面的固定時間報酬是兩種口徑
+
+    上面那組沒有停損,是訊號品質的上限;這組是 positions.py 依 exits.py
+    的規則真的把單平掉的結果,比較接近實際會拿到的數字。
+    """
+    done = [r for r in rows if r.get('exit_ret') is not None]
+    if not done:
+        return []
+    vals = [r['exit_ret'] for r in done]
+    n, avg, med, win = stats(vals)
+    lines = ['\n實際出場(含停損):',
+             f'  {n:3} 筆  平均 {avg:+6.2f}%  中位 {med:+6.2f}%  '
+             f'勝率 {win:5.1f}%  (扣 {FEE_PCT}% 成本後 {avg - FEE_PCT:+.2f}%)']
+
+    counts = defaultdict(list)
+    for r in done:
+        counts[r['exit_reason']].append(r['exit_ret'])
+    for k in sorted(counts, key=lambda k: -len(counts[k])):
+        v = counts[k]
+        lines.append(f'  {k:10} {len(v):3} 筆 ({100*len(v)/len(done):4.1f}%)  '
+                     f'平均 {sum(v)/len(v):+6.2f}%')
+
+    still = sum(1 for r in rows if r.get('stop') and not r.get('exit_reason'))
+    if still:
+        lines.append(f'  仍在場內 {still} 筆(未計入)')
+    return lines
+
+
 def report(rows):
     lines = []
     uniq = dedup(rows)                       # 整體表現用去重後的樣本
@@ -161,6 +190,7 @@ def report(rows):
         else:
             lines.append(f'  {h:2}h 後  尚無資料')
 
+    lines += exit_report(uniq)
     lines += group_report(rows, lambda r: r['mode'], '依模式')
     lines += group_report(rows, volr_bucket, '依量比')
     lines += group_report(rows, lambda r: r.get('tag', '—'), '依判讀標籤')

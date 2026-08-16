@@ -70,6 +70,16 @@ jobs:
         env: *env
         run: python track.py --telegram
 
+      # 出場監控要每輪都跑:停損是有時效的,漏跑一輪就多虧一小時。
+      # 沒有標的出場時它不會推播,不會多吵。
+      - name: Check exits
+        if: github.event.inputs.mode != 'report'
+        env: *env
+        # 每天那班順便附上目前持倉概況,平常只在有出場時才出聲
+        run: >-
+          python positions.py
+          ${{ github.event.schedule == '15 1 * * *' && '--summary' || '' }}
+
       # 每次都補算報酬;只有每天那班與 /stats 會推播統計
       - name: Update tracking
         if: >-

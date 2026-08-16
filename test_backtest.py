@@ -9,6 +9,7 @@ import random
 import sys
 
 import backtest as bt
+import exits as ex
 import scan_bull as sb
 
 # live 版的 measure() 會丟掉最後一根(未收盤),回測沒有這個概念,
@@ -95,12 +96,13 @@ def sweep_bars(rows, sample=25):
         if status != 'ok':
             continue
         back = bars[i]
-        for f in ('volr', 'rsi', 'dist20', 'bbw_pct', 'box_amp', 'dist_hi48'):
+        for f in ('volr', 'rsi', 'dist20', 'bbw_pct', 'box_amp', 'dist_hi48',
+                  'atr', 'ma20', 'ma20_prev', 'box_hi', 'box_lo', 'high', 'low'):
             a, b = live.get(f), back.get(f)
             if a is None or b is None:
                 if a is not b:
                     mismatch += 1
-            elif abs(a - b) > 1e-6:
+            elif abs(a - b) > max(1e-6, abs(a) * 1e-9):
                 mismatch += 1
                 print(f'  第 {i} 根 {f}: live={a:.6g} 回測={b:.6g}')
         for m in modes:
@@ -115,13 +117,75 @@ def sweep_bars(rows, sample=25):
     return mismatch, hits, len(list(idxs))
 
 
+def check_exits(datasets):
+    """驗證出場規則:live 與回測算出的停損價一致,且各種出場原因都跑得到
+
+    停損價由 exits.stop_price 從 bar 的欄位算出,兩邊欄位若有差異,這裡
+    就會抓到。另外統計出場原因的分布 —— 有哪一種永遠觸發不到,通常代表
+    條件寫錯了而不是市場剛好沒出現。
+    """
+    bad, seen = [], {r: 0 for r in ex.REASONS}
+    unfinished = 0
+    for rows_i in datasets:
+        bars, _ = bt.series('X', rows_i)
+        idxs = [i for i, b in enumerate(bars) if b][::7]
+        for i in idxs:
+            # live 與回測對同一根算出的停損價必須相同
+            sub = rows_i[:i + 2]
+            sb.get = lambda url, tries=4, s=sub: {'code': '0',
+                                                  'data': list(reversed(s))}
+            ch24 = (float(sub[i][4]) / float(sub[i - 24][4]) - 1) * 100
+            status, live = sb.measure(('X-USDT-SWAP', 1, ch24, 1e7), '1H')
+            if status == 'ok':
+                a = ex.stop_price(live)
+                b = ex.stop_price(bars[i])
+                if a is None or b is None:
+                    if a is not b:
+                        bad.append(f'第 {i} 根停損價 live={a} 回測={b}')
+                elif abs(a - b) > max(1e-6, abs(a) * 1e-9):
+                    bad.append(f'第 {i} 根停損價 live={a:.8g} 回測={b:.8g}')
+
+            got = bt.simulate(bars, i, ex.Cfg())
+            if not got:
+                unfinished += 1
+                continue
+            seen[got['exit_reason']] += 1
+            if got['held'] > ex.DEF_MAX_BARS:
+                bad.append(f"第 {i} 根持有 {got['held']} 根,超過時間出場上限")
+            # 停損出場的報酬不該優於停損價(跳空只會更差)。停損只在還沒
+            # 減碼時才叫「停損」,減碼後會改名成保本或移動停利,所以這裡
+            # 比的一定是完整部位。
+            pos = ex.open_position(bars[i])
+            if got['exit_reason'] == ex.STOP and pos['stop']:
+                limit = (pos['stop'] / pos['entry'] - 1) * 100
+                if got['exit_ret'] > limit + 1e-9:
+                    bad.append(f"第 {i} 根停損出場 {got['exit_ret']:.4f}% "
+                               f"優於停損價 {limit:.4f}%")
+            # 保本出場代表已經在 +1R 出掉一半,剩下的打平,整筆必為正
+            if got['exit_reason'] == ex.BE and got['exit_ret'] <= 0:
+                bad.append(f"第 {i} 根保本出場卻是 {got['exit_ret']:.4f}%")
+            # 減碼過的單,停損已被抬到成本價之上,不該再賠到超過原本的 1R
+            if got.get('scaled') and got.get('risk') \
+                    and got['exit_ret'] < -got['risk']:
+                bad.append(f"第 {i} 根已減碼卻虧 {got['exit_ret']:.4f}%,"
+                           f"超過 1R({got['risk']:.4f}%)")
+
+    print(f'\n出場模擬:{sum(seen.values())} 筆已結束、{unfinished} 筆未結束')
+    print('  出場原因分布:', {k: v for k, v in seen.items() if v})
+    for r in (ex.STOP, ex.TRAIL, ex.TIME):
+        if not seen[r]:
+            bad.append(f'測試資料從未觸發「{r}」,這條規則等於沒驗到')
+    return bad
+
+
 def main():
     rows = make_rows()
     live, back = compare(rows)
 
     fields = ['ts', 'last', 'bull', 'bear', 'volr', 'ch1', 'ch4', 'ch12', 'ch24',
               'dist20', 'rsi', 'ma20_up', 'above_mid', 'ma_cross',
-              'dist_hi24', 'dist_hi48', 'box_amp', 'bbw_pct']
+              'dist_hi24', 'dist_hi48', 'box_amp', 'bbw_pct',
+              'high', 'low', 'atr', 'ma20', 'ma20_prev', 'box_hi', 'box_lo']
     bad = []
     print(f"{'欄位':12} {'live':>14} {'回測':>14}")
     for f in fields:
@@ -167,6 +231,8 @@ def main():
             total_hits[k] += v
         if mism:
             bad.append(f'逐根比對 {mism} 處不一致')
+
+    bad += check_exits([rows_i for rows_i, _ in datasets])
 
     print(f'\n逐根比對 {checked} 根,條件成立次數:{total_hits}')
     if sum(total_hits.values()) == 0:
