@@ -1,11 +1,21 @@
 name: Telegram Bot
 
-# 取代 Cloudflare Worker:定時去 Telegram 收信、解析指令並執行。
-# 排程最密只能 5 分鐘,指令會延遲幾分鐘才有回應。
+# 備援路徑:平常指令走 Cloudflare Worker 的 webhook(幾秒內回應),
+# 這裡只留手動觸發當 Worker 掛掉時的救援。
+#
+# 排程已停用。原因:寫 '*/5 * * * *' 但 GitHub 實際平均 30 分鐘才跑一次
+# (最長量到 85 分鐘),而 tg_poll.py 會略過 30 分鐘前的訊息,等於有一半
+# 的指令在被讀到之前就過期、被靜靜丟掉。
+#
+# 注意:手動跑這個 workflow 會解除 Telegram webhook(getUpdates 與 webhook
+# 互斥),Worker 那條路就失效了。救援結束後要用 tg_webhook.py --set 裝回去。
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      takeover:
+        description: '解除 webhook 由這裡接手收信(Worker 掛掉時才選 true)'
+        required: false
+        default: 'false'
 
 permissions:
   contents: write
@@ -31,7 +41,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: python tg_poll.py
+        run: >-
+          python tg_poll.py
+          ${{ github.event.inputs.takeover == 'true' && '--takeover' || '' }}
 
       # /scan 會寫入訊號記錄,跟排程掃描一樣要存回 repo
       - name: Commit signal log

@@ -1,0 +1,32 @@
+name: Telegram Webhook
+
+# 裝設 / 檢查 Telegram webhook。Token 與 secret 都在 GitHub Secrets 裡,
+# 從這裡跑就不必把它們複製到本機。
+#
+# 部署 Worker 後、或用 tg_bot.yml 救援過之後,跑一次 action=set 把即時
+# 路徑接回來;沒回應時先跑 action=info 看是不是卡在 webhook 這段。
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: '要做什麼'
+        required: true
+        default: 'info'
+        type: choice
+        options: [info, set, delete]
+
+jobs:
+  webhook:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 操作 webhook
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+        run: python tg_webhook.py --${{ github.event.inputs.action }}

@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '模式: classic / early / breakout / chase / report(只出統計)'
+        description: '模式: classic / early / breakout / chase / report(只出統計)/ positions(只出持倉)'
         required: false
         default: 'classic'
       args:
@@ -53,11 +53,13 @@ jobs:
         env: *env
         run: python scan_bull.py --mode early --always --record signals.jsonl
 
-      # mode=report 時只出統計,不掃描(Telegram 的 /stats 走這條)
+      # report / positions 是「只查不掃」的分支,交給下面兩步處理
+      # (Telegram 的 /stats 與 /pos 分別走那兩條)
       - name: Dispatched scan
         if: >-
           github.event_name == 'workflow_dispatch'
           && github.event.inputs.mode != 'report'
+          && github.event.inputs.mode != 'positions'
         env: *env
         run: |
           python scan_bull.py --mode "${{ github.event.inputs.mode }}" \
@@ -70,10 +72,20 @@ jobs:
         env: *env
         run: python track.py --telegram
 
+      # /pos:只回報現在手上有什麼、離停損多遠,不做出場判斷也不寫記錄
+      - name: Dispatched positions
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && github.event.inputs.mode == 'positions'
+        env: *env
+        run: python positions.py --report
+
       # 出場監控要每輪都跑:停損是有時效的,漏跑一輪就多虧一小時。
       # 沒有標的出場時它不會推播,不會多吵。
       - name: Check exits
-        if: github.event.inputs.mode != 'report'
+        if: >-
+          github.event.inputs.mode != 'report'
+          && github.event.inputs.mode != 'positions'
         env: *env
         # 每天那班順便附上目前持倉概況,平常只在有出場時才出聲
         run: >-
@@ -85,6 +97,7 @@ jobs:
         if: >-
           github.event.schedule != '15 1 * * *'
           && github.event.inputs.mode != 'report'
+          && github.event.inputs.mode != 'positions'
         env: *env
         run: python track.py
 
