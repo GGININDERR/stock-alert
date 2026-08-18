@@ -26,8 +26,6 @@ import backtest as bt
 import exits as ex
 from scan_bull import OKX_CANDLES, TPE, get, send_telegram
 
-MAX_AGE_BARS = 200          # 超過 K 線可查範圍的舊單,補不回來就標記結案
-
 
 def load(path):
     rows = []
@@ -112,7 +110,6 @@ def check(rows, cfg):
                 closed.append(r)
                 continue
             pos = position_of(r)
-            pos['bars'] = 0
             # 目標價要在重放之前算:重放會把 stop 抬到成本價或移動停利,
             # 事後再算 R 就不是進場當下那個 R 了
             tp1 = ex.tp1_price(pos, cfg)

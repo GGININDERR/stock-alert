@@ -195,6 +195,13 @@ def handle(text, dry=False):
             run(['check_stocks.py', head[1:]] + rest)
         return f'stock:{head[1:]} {" ".join(rest)}'
 
+    # 以 / 開頭但不認得的指令要回話。默默吃掉的話,打錯字或用到還沒
+    # 上線的指令都會像機器人掛了一樣(而且訊息已被 ack,重跑也救不回)。
+    if head.startswith('/'):
+        if not dry:
+            send(f"❓ 沒有 <code>{head}</code> 這個指令,打 /help 看清單")
+        return f'unknown:{head}'
+
     return None                      # 一般聊天訊息,忽略
 
 
