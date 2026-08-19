@@ -55,19 +55,25 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scan_bull.py --mode breakout --record signals.jsonl
 
-      # early 維持每 4 小時的節奏,但改用 UTC 時鐘判定(00/04/08/12/16/20)。
-      # --always:0 檔時也回報,讓你知道系統還活著 —— 也正因為如此,沒收到
-      # 訊息就等於這一班沒跑,是這次能抓到問題的原因。
+      # early 也改成每小時跑。原本每 4 小時的理由是「壓縮盤整的狀態不會一
+      # 小時就變」,但那說的是「還在壓縮」這件事;early 真正要抓的是「剛
+      # 站上箱頂」那一刻(dist_hi24 > -0.5),那是一個瞬間而不是一段狀態。
+      # 四小時掃一次,等於最多晚四根 K 棒才看到,不是進場價變差就是整個錯過。
+      #
+      # 重複推播的疑慮實測不成立:46 筆 early 訊號分佈在 38 檔上,沒有任何
+      # 一檔連續重複出現 —— 突破之後箱頂被墊高、帶寬被撐開,條件自己就不
+      # 成立了。已經每小時在跑的 breakout 相鄰整點重複率也只有 15%。
+      #
+      # --always 只留在 UTC 00(台北 08:00)那班當每日心跳,否則一天會收到
+      # 24 則「本輪無標的」。
       - name: Scheduled early scan
         if: github.event_name == 'schedule'
         env: *env
         run: |
           h=$(date -u +%H)
-          if [ $((10#$h % 4)) -ne 0 ]; then
-            echo "UTC ${h} 時,非 early 時段,略過"
-            exit 0
-          fi
-          python scan_bull.py --mode early --always --record signals.jsonl
+          always=''
+          [ "$h" = '00' ] && always='--always'
+          python scan_bull.py --mode early $always --record signals.jsonl
 
       # mode=report 時只出統計,不掃描(Telegram 的 /stats 走這條)
       - name: Dispatched scan
