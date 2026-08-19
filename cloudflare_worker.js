@@ -15,9 +15,9 @@
  */
 
 // 版本:每次改 Worker 就 +1,方便確認部署到底有沒有生效
-const VERSION = '2026-08-13 幣圈指令 /scan /stats';
+const VERSION = '2026-08-17 補上 /pos,webhook 恢復為主要路徑';
 
-const HELP_TEXT = `🤖 <b>Stark 停損機器人</b>  <i>(v2 幣圈版)</i>
+const HELP_TEXT = `🤖 <b>Stark 停損機器人</b>  <i>(v3 即時版)</i>
 
 <b>查詢類</b>
 /check  或 /check_all — 檢查台股 + 美股(停損 + 停利)
@@ -41,6 +41,7 @@ const HELP_TEXT = `🤖 <b>Stark 停損機器人</b>  <i>(v2 幣圈版)</i>
 /scan early — 壓縮後突破,還沒噴的位置
 /scan chase — 追高順勢,供觀察回踩
 /scan classic — 最寬鬆的一組
+/pos — 目前幣圈持倉:停損價、離停損多遠、是否逼近停損
 /stats — 訊號追蹤統計(這些條件到底準不準)
 
 <b>自動排程</b>
@@ -148,6 +149,16 @@ export default {
         inputs: { mode, args: '' },
         ackLabel: SCAN_LABEL[mode],
         note: '沒掃到標的就不會再有訊息,約 30 秒',
+      });
+      return new Response('ok');
+    }
+
+    // /pos — 幣圈持倉狀態(走 scan_bull.yml 的 positions 分支)
+    if (firstToken === '/pos' || firstToken === '/positions' || firstToken === '/holding') {
+      await dispatch(env, {
+        workflow: 'scan_bull.yml',
+        inputs: { mode: 'positions', args: '' },
+        ackLabel: '幣圈持倉狀態',
       });
       return new Response('ok');
     }

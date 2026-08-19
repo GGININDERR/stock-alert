@@ -1,16 +1,19 @@
-"""Telegram 指令收信:取代 Cloudflare Worker 的角色
+"""Telegram 指令收信:Cloudflare Worker 掛掉時的備援路徑
 
-原本的路徑是 Telegram → Cloudflare Worker → 觸發 workflow。Worker 只做
-「把訊息翻成指令」這件事,GitHub 自己也能做,差別只在改成定時去收信而不是
-等 Telegram 推過來。既然已經在 Actions 裡,連觸發 workflow 都省了,直接執行
-對應的腳本,跟排程呼叫 check_stocks.py 的方式一樣。
+平常的路徑是 Telegram → Cloudflare Worker → 觸發 workflow,幾秒內就有回應。
+這支是同一張指令表的收信版,只在 Worker 出問題時手動跑。
 
-代價:排程最密只能 5 分鐘一次,加上 GitHub 排程本身會延遲甚至跳過,指令
-大約 5~20 分鐘才會有回應。要即時就得回到 Worker 那條路。
+為什麼不當主力:排程最密只能 5 分鐘,但 GitHub 實際平均 30 分鐘才跑一次
+(量過最長 85 分鐘),而下面的 MAX_AGE_SEC 會略過太舊的訊息,等於有一半的
+指令在被讀到之前就過期。tg_bot.yml 的排程因此停用,只留手動觸發。
+
+getUpdates 與 webhook 互斥,所以收信會踩掉 Worker 那條路;要真的接手必須
+明講 --takeover,收完再用 tg_webhook.py --set 把 webhook 裝回去。
 
 CLI 用法:
-  python tg_poll.py           # 收信並執行指令
-  python tg_poll.py --dry     # 只印出解析結果,不執行也不回訊息
+  python tg_poll.py            # 收信並執行指令(webhook 還在就拒絕動作)
+  python tg_poll.py --takeover # 解除 webhook 後接手收信
+  python tg_poll.py --dry      # 只印出解析結果,不執行也不回訊息
 
 環境變數:TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 """
@@ -71,7 +74,8 @@ HELP = """🤖 <b>Stark 停損機器人</b>  <i>(GitHub 版)</i>
 幣圈每小時掃 breakout、每 4 小時掃 early,掃到才推播;
 每天 09:15 推一次訊號追蹤統計。
 
-⏰ <i>指令由 GitHub 每 5 分鐘收一次信,所以會延遲幾分鐘才有回應。</i>"""
+⏰ <i>你現在走的是備援收信模式,回應會慢。要恢復即時,跑一次
+Telegram Webhook workflow 的 action=set。</i>"""
 
 
 def api(method, **params):
@@ -94,15 +98,21 @@ def send(text):
     return api('sendMessage', chat_id=CHAT_ID, text=text, parse_mode='HTML')
 
 
-def updates():
-    """取回未讀訊息;若 webhook 還掛著會拿不到,先解除再試一次
+def updates(takeover=False):
+    """取回未讀訊息;webhook 還掛著時預設不動它
 
-    Telegram 的 webhook 與 getUpdates 互斥。原本的 Worker 佔著 webhook,
-    改用收信模式就得先解除,解除後 Worker 那條路自然失效(指令改由這裡處理)。
+    Telegram 的 webhook 與 getUpdates 互斥。Worker 佔著 webhook 時要收信就得
+    先解除,但解除等於把即時那條路關掉——這種副作用不該順手發生,所以只有
+    明講 --takeover 才做。
     """
     r = api('getUpdates', timeout=0, allowed_updates=json.dumps(['message']))
     if not r.get('ok') and r.get('error_code') == 409:
-        print('偵測到 webhook 仍掛著(Worker),解除後改用收信模式')
+        if not takeover:
+            print('webhook 仍掛著(Cloudflare Worker),指令由它處理,這裡不接手。\n'
+                  '真的要改用收信模式請加 --takeover,事後記得 '
+                  'python tg_webhook.py --set 裝回去。')
+            return []
+        print('解除 webhook,改由這裡收信(Worker 那條路會失效)')
         api('deleteWebhook')
         time.sleep(1)
         r = api('getUpdates', timeout=0, allowed_updates=json.dumps(['message']))
@@ -208,13 +218,15 @@ def handle(text, dry=False):
 def main(argv=None):
     p = argparse.ArgumentParser(description='Telegram 指令收信')
     p.add_argument('--dry', action='store_true', help='只解析不執行')
+    p.add_argument('--takeover', action='store_true',
+                   help='webhook 還掛著時解除它,由這裡接手收信')
     opt = p.parse_args(argv if argv is not None else sys.argv[1:])
 
     if not TOKEN or not CHAT_ID:
         print('TELEGRAM_TOKEN / TELEGRAM_CHAT_ID 沒設定')
         return 1
 
-    ups = updates()
+    ups = updates(opt.takeover)
     print(f'收到 {len(ups)} 則訊息')
     now, last_id, handled = time.time(), None, 0
 
