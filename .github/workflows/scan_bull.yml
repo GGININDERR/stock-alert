@@ -40,18 +40,40 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # 排程步驟不看是哪一條 cron 觸發的,改看實際時鐘。
+      #
+      # 原本用 github.event.schedule == '30 */4 * * *' 來認 early 那班,結果
+      # early 幾乎不跑:GitHub 的排程會延遲,04:00 那班常常拖到 04:32 才送達,
+      # 而它帶的仍然是 '0 * * * *',於是 early 被跳過;真正的 '30 */4' 那班
+      # 則整個被丟掉。實測 2026-08-19 早上三次排程全部 skip 掉 early。
+      #
+      # 兩條 cron 都留著當備援 —— 誰先送到都算數,由時鐘決定要跑哪些掃描。
       - name: Scheduled breakout scan
-        if: github.event.schedule == '0 * * * *'
+        if: github.event_name == 'schedule'
         env: &env
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scan_bull.py --mode breakout --record signals.jsonl
 
-      # --always:每 4 小時一次,0 檔時也回報,讓你知道系統還活著
+      # early 也改成每小時跑。原本每 4 小時的理由是「壓縮盤整的狀態不會一
+      # 小時就變」,但那說的是「還在壓縮」這件事;early 真正要抓的是「剛
+      # 站上箱頂」那一刻(dist_hi24 > -0.5),那是一個瞬間而不是一段狀態。
+      # 四小時掃一次,等於最多晚四根 K 棒才看到,不是進場價變差就是整個錯過。
+      #
+      # 重複推播的疑慮實測不成立:46 筆 early 訊號分佈在 38 檔上,沒有任何
+      # 一檔連續重複出現 —— 突破之後箱頂被墊高、帶寬被撐開,條件自己就不
+      # 成立了。已經每小時在跑的 breakout 相鄰整點重複率也只有 15%。
+      #
+      # --always 只留在 UTC 00(台北 08:00)那班當每日心跳,否則一天會收到
+      # 24 則「本輪無標的」。
       - name: Scheduled early scan
-        if: github.event.schedule == '30 */4 * * *'
+        if: github.event_name == 'schedule'
         env: *env
-        run: python scan_bull.py --mode early --always --record signals.jsonl
+        run: |
+          h=$(date -u +%H)
+          always=''
+          [ "$h" = '00' ] && always='--always'
+          python scan_bull.py --mode early $always --record signals.jsonl
 
       # mode=report 時只出統計,不掃描(Telegram 的 /stats 走這條)
       - name: Dispatched scan
