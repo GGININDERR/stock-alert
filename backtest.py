@@ -289,6 +289,13 @@ def run_one(sym, rows, opt):
             continue
         if opt.max_dist is not None and abs(x['dist20']) >= opt.max_dist:
             continue
+        # 停損距離太窄的單直接不出訊號:ATR 趨近於零時(波動死掉、或成交
+        # 稀疏的代幣化股票在美股收盤後)停損會貼在進場價上,一個跳動就被
+        # 掃掉,而手續費來回就 0.2%,這種單的期望值必為負
+        if opt.min_risk:
+            r = ex.risk_pct(ex.open_position(x, cfg))
+            if r is None or r < opt.min_risk:
+                continue
         rec = {'sym': sym, 'ts': x['ts'], 'volr': x['volr'],
                'dist20': x['dist20'], 'entry': c[i]}
         for hz in HORIZONS:                     # 事後報酬,不足長度就略過
@@ -412,6 +419,9 @@ def main(argv=None):
     p.add_argument('--ch1', type=float, default=sb.DEF_CH1)
     p.add_argument('--ch4', type=float, default=sb.DEF_CH4)
     p.add_argument('--max-dist', type=float, default=None)
+    p.add_argument('--min-risk', type=float, default=ex.DEF_MIN_RISK,
+                   help='最小停損距離(%%),低於此值的訊號直接不出;0=不設限。'
+                        '預設跟 live 掃描同一個值,回測的才是實際會發的訊號')
     p.add_argument('--short', action='store_true')
     p.add_argument('--stop-atr', type=float, default=ex.DEF_STOP_ATR,
                    help=f'停損距離 = 進場價 - N×ATR(14),預設 {ex.DEF_STOP_ATR}')

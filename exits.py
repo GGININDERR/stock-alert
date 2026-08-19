@@ -26,6 +26,11 @@ R 指的是這筆單的風險單位,也就是進場價到停損價的距離。�
 from collections import namedtuple
 
 DEF_STOP_ATR = 1.5      # 停損距離:進場價 - N × ATR(14)
+DEF_MIN_RISK = 1.0      # 最小停損距離(%):低於此值的訊號直接不出
+# min_risk 的依據是算術而非回測:手續費來回約 0.2%,停損距離若只有零點
+# 幾 %(波動死掉的標的、或代幣化股票在美股收盤後),一個跳動就掃掉,
+# 期望值必為負。回測掃過 0~1.2% 在成交額前 200 檔裡一筆都擋不到,
+# 所以這條是零成本的安全網,不是調出來的參數。
 DEF_MAX_BARS = 24       # 時間出場:抱滿幾根 K 棒
 DEF_TP1_R = 1.0         # 第一目標:獲利達 N 個 R(R = 停損距離)
 DEF_TP1_FRAC = 0.5      # 到第一目標時出掉的比例
@@ -48,6 +53,12 @@ RSI = 'RSI 轉弱'
 TIME = '時間出場'
 
 REASONS = (STOP, TP1, BE, TRAIL, BOX, MA20, RSI, TIME)
+
+# 計畫用的圖示,與「已出場」的圖示刻意分開:🛑 是紅燈,擺在還沒發生的
+# 計畫旁邊會讀成「這檔別碰」;🛡 講的是這個價格在保護你,語氣才對。
+# 真的被掃出去時仍然用 🛑(見 positions.ICON),那時候紅燈是準確的。
+PLAN_STOP = '🛡'
+PLAN_TP = '🎯'
 
 # 停損價是怎麼來的,決定最後那筆出場要掛哪一個名字
 KIND_REASON = {'init': STOP, 'breakeven': BE, 'trail': TRAIL}
@@ -203,7 +214,7 @@ def plan_text(pos, cfg=Cfg()):
     if not pos.get('stop'):
         return '⚠️ <i>ATR 算不出來,給不了停損價,這檔建議略過</i>'
     r = risk_pct(pos)
-    lines = [f"🛑 停損 <b>{pos['stop']:.6g}</b>  <i>(-{r:.2f}%)</i>"]
+    lines = [f"{PLAN_STOP} 停損 <b>{pos['stop']:.6g}</b>  <i>(-{r:.2f}%)</i>"]
 
     invalid = []
     if pos.get('box_hi'):
@@ -214,7 +225,7 @@ def plan_text(pos, cfg=Cfg()):
     tp = tp1_price(pos, cfg)
     if tp:
         lines.append(
-            f"🎯 目標 <b>{tp:.6g}</b>  "
+            f"{PLAN_TP} 目標 <b>{tp:.6g}</b>  "
             f"<i>(+{(tp / pos['entry'] - 1) * 100:.2f}%)</i> "
             f"出 {cfg.tp1_frac:.0%},停損移到成本 {pos['entry']:.6g}")
         lines.append(f"　　<i>之後用最高價 -{cfg.trail_atr:g}×ATR 跟著跑</i>")

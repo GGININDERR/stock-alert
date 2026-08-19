@@ -406,10 +406,22 @@ MODE_DEFAULTS = {
 }
 
 
+def enough_risk(x, min_risk):
+    """停損距離夠不夠寬:太窄的訊號(含算不出停損的)直接不出
+
+    針對的是波動趨近於零的標的,例如代幣化美股在美股收盤後:量比會因為
+    均量極小而虛高,ATR 卻小到停損只剩零點幾 %,手續費來回就把它吃光。
+    """
+    r = exits.risk_pct(exits.open_position(x))
+    return r is not None and r >= min_risk
+
+
 def pick(res, opt):
     hits = MODES[opt.mode](res, opt)
     if opt.max_dist is not None:       # 通用後置過濾,四種模式都適用
         hits = [x for x in hits if abs(x['dist20']) < opt.max_dist]
+    if opt.min_risk > 0:
+        hits = [x for x in hits if enough_risk(x, opt.min_risk)]
     hits.sort(key=lambda x: -x['volr'])           # 量比大的排前面
     return hits
 
@@ -557,6 +569,8 @@ def parse_args(argv):
     p.add_argument('--ch4', type=float, default=DEF_CH4, help='4 根 K 棒漲幅門檻 %%')
     p.add_argument('--max-dist', type=float, default=None,
                    help='離 MA20 乖離上限 %%,超過就排除(避開追高)')
+    p.add_argument('--min-risk', type=float, default=exits.DEF_MIN_RISK,
+                   help='最小停損距離 %%,低於此值的訊號不出;0=不設限')
     p.add_argument('--short', action='store_true', help='改掃空頭排列')
     p.add_argument('--always', action='store_true',
                    help='0 檔時也發一則「本輪無標的」,預設沒標的就靜默')
