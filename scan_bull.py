@@ -398,11 +398,14 @@ MODE_DESC = {
 }
 
 # 各模式的預設門檻(未在命令列指定時採用)
+# min_risk 分模式:early 抓的就是壓縮盤整,停損天生窄(實盤中位數 1.0%),
+# 用通用的 1.0 會砍掉它近半訊號;它只需要擋掉「波動死透」的極端值。
+# 其他模式沒有這個特性,1.0 當安全網剛好(實盤最窄的一筆是 1.79%)。
 MODE_DEFAULTS = {
-    'classic': dict(turn=DEF_TURNOVER, volr=2.0),
-    'early': dict(turn=1e6, volr=2.0),
-    'breakout': dict(turn=2e6, volr=2.0),
-    'chase': dict(turn=5e6, volr=3.0),
+    'classic': dict(turn=DEF_TURNOVER, volr=2.0, min_risk=1.0),
+    'early': dict(turn=1e6, volr=2.0, min_risk=0.3),
+    'breakout': dict(turn=2e6, volr=2.0, min_risk=1.0),
+    'chase': dict(turn=5e6, volr=3.0, min_risk=1.0),
 }
 
 
@@ -569,8 +572,9 @@ def parse_args(argv):
     p.add_argument('--ch4', type=float, default=DEF_CH4, help='4 根 K 棒漲幅門檻 %%')
     p.add_argument('--max-dist', type=float, default=None,
                    help='離 MA20 乖離上限 %%,超過就排除(避開追高)')
-    p.add_argument('--min-risk', type=float, default=exits.DEF_MIN_RISK,
-                   help='最小停損距離 %%,低於此值的訊號不出;0=不設限')
+    p.add_argument('--min-risk', type=float, default=None,
+                   help='最小停損距離 %%,低於此值的訊號不出;'
+                        '未指定則用該模式預設值,0=不設限')
     p.add_argument('--short', action='store_true', help='改掃空頭排列')
     p.add_argument('--always', action='store_true',
                    help='0 檔時也發一則「本輪無標的」,預設沒標的就靜默')
