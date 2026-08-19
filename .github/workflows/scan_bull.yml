@@ -40,18 +40,34 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # 排程步驟不看是哪一條 cron 觸發的,改看實際時鐘。
+      #
+      # 原本用 github.event.schedule == '30 */4 * * *' 來認 early 那班,結果
+      # early 幾乎不跑:GitHub 的排程會延遲,04:00 那班常常拖到 04:32 才送達,
+      # 而它帶的仍然是 '0 * * * *',於是 early 被跳過;真正的 '30 */4' 那班
+      # 則整個被丟掉。實測 2026-08-19 早上三次排程全部 skip 掉 early。
+      #
+      # 兩條 cron 都留著當備援 —— 誰先送到都算數,由時鐘決定要跑哪些掃描。
       - name: Scheduled breakout scan
-        if: github.event.schedule == '0 * * * *'
+        if: github.event_name == 'schedule'
         env: &env
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scan_bull.py --mode breakout --record signals.jsonl
 
-      # --always:每 4 小時一次,0 檔時也回報,讓你知道系統還活著
+      # early 維持每 4 小時的節奏,但改用 UTC 時鐘判定(00/04/08/12/16/20)。
+      # --always:0 檔時也回報,讓你知道系統還活著 —— 也正因為如此,沒收到
+      # 訊息就等於這一班沒跑,是這次能抓到問題的原因。
       - name: Scheduled early scan
-        if: github.event.schedule == '30 */4 * * *'
+        if: github.event_name == 'schedule'
         env: *env
-        run: python scan_bull.py --mode early --always --record signals.jsonl
+        run: |
+          h=$(date -u +%H)
+          if [ $((10#$h % 4)) -ne 0 ]; then
+            echo "UTC ${h} 時,非 early 時段,略過"
+            exit 0
+          fi
+          python scan_bull.py --mode early --always --record signals.jsonl
 
       # mode=report 時只出統計,不掃描(Telegram 的 /stats 走這條)
       - name: Dispatched scan
