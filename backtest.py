@@ -419,9 +419,9 @@ def main(argv=None):
     p.add_argument('--ch1', type=float, default=sb.DEF_CH1)
     p.add_argument('--ch4', type=float, default=sb.DEF_CH4)
     p.add_argument('--max-dist', type=float, default=None)
-    p.add_argument('--min-risk', type=float, default=ex.DEF_MIN_RISK,
+    p.add_argument('--min-risk', type=float, default=None,
                    help='最小停損距離(%%),低於此值的訊號直接不出;0=不設限。'
-                        '預設跟 live 掃描同一個值,回測的才是實際會發的訊號')
+                        '未指定則用該模式預設值,與 live 掃描一致')
     p.add_argument('--short', action='store_true')
     p.add_argument('--stop-atr', type=float, default=ex.DEF_STOP_ATR,
                    help=f'停損距離 = 進場價 - N×ATR(14),預設 {ex.DEF_STOP_ATR}')
