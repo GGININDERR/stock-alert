@@ -52,17 +52,51 @@ TPE = timezone(timedelta(hours=8))
 
 # ───────────────────────── Telegram ─────────────────────────
 
-def send_telegram(message):
+class TelegramError(RuntimeError):
+    """推播失敗。刻意讓它往上炸,而不是回傳 False 被忽略。
+
+    原本這個函式回傳 resp.ok,但十幾個呼叫端沒有一個檢查回傳值,也沒有
+    任何一行 log。結果是:掃到標的 → 寫進 signals.jsonl → 推播被 Telegram
+    以 400/403/429 打回 → 這一步照樣 exit 0 → workflow 全綠。
+    訊號記錄裡有,你手機上沒有,而且完全查不出來。
+
+    推播失敗等於這輪掃描白做了,就該讓 workflow 變紅。
+    """
+
+
+def send_telegram(message, tries=3):
+    """送出推播。三次都失敗就丟 TelegramError,並把 Telegram 的回覆印出來。
+
+    會重試是因為 429(rate limit)與 5xx 都是暫時性的;400(HTML 解析失敗)
+    這種重試也沒用,但多試兩次的成本遠低於漏掉一則訊號。
+    """
     token = os.environ['TELEGRAM_TOKEN']
     chat_id = os.environ['TELEGRAM_CHAT_ID']
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    resp = requests.post(url, json={
+    payload = {
         'chat_id': chat_id,
         'text': message,
         'parse_mode': 'HTML',
         'disable_web_page_preview': True,
-    })
-    return resp.ok
+    }
+
+    last = ''
+    for i in range(1, tries + 1):
+        try:
+            resp = requests.post(url, json=payload, timeout=20)
+        except requests.RequestException as e:
+            last = f'{type(e).__name__}: {e}'
+        else:
+            if resp.ok:
+                return True
+            # Telegram 會在 body 裡說明原因(description),那才是有用的訊息,
+            # 光看 status code 分不出是 HTML 壞了還是 chat_id 錯了。
+            last = f'HTTP {resp.status_code} {resp.text[:300]}'
+        print(f'  推播失敗(第 {i}/{tries} 次):{last}', file=sys.stderr)
+        if i < tries:
+            time.sleep(2 ** i)
+
+    raise TelegramError(f'Telegram 推播失敗({tries} 次):{last}')
 
 
 # ───────────────────────── 工具 ─────────────────────────
@@ -624,12 +658,18 @@ def main(argv=None):
     if opt.record and hits:
         record_signals(opt.record, hits, opt)
 
-    # 有標的就發;沒標的預設靜默,--always 時改發一則簡短回報
+    # 有標的就發;沒標的預設靜默,--always 時改發一則簡短回報。
+    # 印一行「已推播」是為了讓 log 能回答「到底有沒有送出去」——
+    # 沒有這行的話,靜默(沒標的)與推播失敗在 log 上長得一模一樣。
     if not opt.dry:
         if hits:
             send_telegram(build_message(hits, len(res), opt))
+            print(f'已推播 {len(hits)} 檔標的')
         elif opt.always:
             send_telegram(build_empty_message(len(res), opt))
+            print('已推播「本輪無標的」回報')
+        else:
+            print('無標的,靜默不推播')
 
     return 0
 

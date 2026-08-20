@@ -40,13 +40,22 @@ SCOPE_WRITE = ['https://www.googleapis.com/auth/spreadsheets']
 # ───────────────────────── Telegram ─────────────────────────
 
 def send_telegram(message):
+    """送出推播;失敗就丟例外讓 workflow 變紅。
+
+    跟 scan_bull.send_telegram 同樣的理由:這裡所有呼叫端都沒檢查回傳值,
+    靜默失敗會讓「停損通知沒送到」看起來跟「沒有需要通知的事」一樣。
+    停損漏通知的代價比 workflow 變紅高得多。
+    """
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     resp = requests.post(url, json={
         'chat_id': TELEGRAM_CHAT_ID,
         'text': message,
         'parse_mode': 'HTML'
-    })
-    return resp.ok
+    }, timeout=20)
+    if not resp.ok:
+        raise RuntimeError(
+            f'Telegram 推播失敗:HTTP {resp.status_code} {resp.text[:300]}')
+    return True
 
 
 # ───────────────────────── Google Sheets ─────────────────────────
