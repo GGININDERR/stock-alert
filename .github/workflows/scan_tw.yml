@@ -1,0 +1,69 @@
+name: TW Stock Scan
+
+on:
+  schedule:
+    # 台股 13:30 收盤,證交所全日收盤檔約 14:00~15:00 才更新完,
+    # 排在台北 15:30 = UTC 07:30,週一到週五(遇國定假日 API 會回舊資料,
+    # 掃出來的訊號時間戳會跟前一日相同,record 那層會自動去重)
+    - cron: '30 7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '模式: breakout / early'
+        required: false
+        default: 'breakout'
+      args:
+        description: '額外參數,例如: --otc --volr 3 --capital 2000'
+        required: false
+        default: ''
+
+# 訊號記錄要 commit 回 repo
+permissions:
+  contents: write
+
+concurrency:
+  group: scan-tw
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Self test
+        run: python test_scan_tw.py
+
+      # 台股用另一個 bot(StarkTW_bot2),所以是另一組 secret;
+      # 沒設定的話會退回原本那組,先跑起來再說
+      - name: Scheduled breakout scan
+        if: github.event_name == 'schedule'
+        env: &env
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN_TW || secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_TW || secrets.TELEGRAM_CHAT_ID }}
+        run: python scan_tw.py --mode breakout --otc --record signals_tw.jsonl
+
+      - name: Dispatched scan
+        if: github.event_name == 'workflow_dispatch'
+        env: *env
+        run: |
+          python scan_tw.py --mode "${{ github.event.inputs.mode }}" \
+            --record signals_tw.jsonl ${{ github.event.inputs.args }}
+
+      - name: Commit signal log
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add signals_tw.jsonl
+          git diff --staged --quiet && echo '無變動' && exit 0
+          git commit -m "台股訊號記錄更新 [skip ci]"
+          for i in 1 2 3 4; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            echo "push 失敗,第 $i 次重試"; sleep $((2 ** i))
+          done
+          exit 1
