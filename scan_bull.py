@@ -10,6 +10,8 @@ CLI 用法:
   python scan_bull.py --volr 3        # 量比門檻改 3(訊號更少更精)
   python scan_bull.py --turn 5e6      # 只看 24h 成交額 500 萬美元以上的主流幣
   python scan_bull.py --max-dist 10   # 避開追高:離 MA20 乖離 10% 以上不列入
+  python scan_bull.py --risk 50       # 每筆風險 50 USDT(下單數量跟著變)
+  python scan_bull.py --risk 0        # 不顯示下單參數
   python scan_bull.py --bar 4H        # 改看 4H 級別(MA 週期不用動)
   python scan_bull.py --short         # 改掃空頭排列(均線反向,量比條件不變)
 
@@ -33,6 +35,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 import exits
+import sizing
 
 OKX_TICKERS = 'https://www.okx.com/api/v5/market/tickers?instType=SWAP'
 OKX_CANDLES = 'https://www.okx.com/api/v5/market/candles?instId={inst}&bar={bar}&limit=200'
@@ -480,7 +483,13 @@ def build_message(hits, scanned, opt):
         thin = ('\n⚠️ <i>24h 成交額不足 1M,掛單簿薄,進出滑價會吃掉利潤</i>'
                 if thin_warn(x) else '')
         # 進場訊號一定要附出場計畫,否則等於只給了一半
-        plan = exits.plan_text(exits.open_position(x))
+        pos = exits.open_position(x)
+        plan = exits.plan_text(pos)
+        # 半自動下單:把「買多少」也算好。憑感覺每筆下一樣的金額,等於停損
+        # 越近的單風險越小、越遠的越大,剛好跟該做的相反。
+        ticket = sizing.ticket_text(
+            x['sym'], x['last'], pos['stop'], exits.tp1_price(pos),
+            opt.risk, opt.max_notional) if opt.risk > 0 else ''
         blocks.append(
             f"\n<b>{i}. {x['sym']}</b>  {x['last']:.6g}  {tag}\n"
             f"量比 <b>{x['volr']:.2f}</b>ｘ ｜ 離MA20 {x['dist20']:+.2f}%\n"
@@ -490,6 +499,7 @@ def build_message(hits, scanned, opt):
             f"距前高 {x['dist_hi48']:+.2f}%\n"
             f"→ <i>{why}</i>\n"
             f"{plan}{thin}\n"
+            f"{ticket}"
         )
 
     # 本輪重點:優先挑「量比夠大且乖離乾淨」的,沒有就退回量比最大那檔
@@ -572,6 +582,13 @@ def parse_args(argv):
     p.add_argument('--ch4', type=float, default=DEF_CH4, help='4 根 K 棒漲幅門檻 %%')
     p.add_argument('--max-dist', type=float, default=None,
                    help='離 MA20 乖離上限 %%,超過就排除(避開追高)')
+    p.add_argument('--risk', type=float,
+                   default=sizing.env_float('RISK_USDT', sizing.DEF_RISK),
+                   help='每筆願意虧的金額 USDT,用來反推下單數量;0=不顯示下單參數')
+    p.add_argument('--max-notional', type=float,
+                   default=sizing.env_float('MAX_NOTIONAL',
+                                            sizing.DEF_MAX_NOTIONAL),
+                   help='單筆部位上限 USDT:停損很近時避免部位被放大到吃不下')
     p.add_argument('--min-risk', type=float, default=None,
                    help='最小停損距離 %%,低於此值的訊號不出;'
                         '未指定則用該模式預設值,0=不設限')
