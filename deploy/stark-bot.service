@@ -1,0 +1,22 @@
+[Unit]
+Description=Stark bot 常駐主迴圈(掃描 + 出場監控 + Telegram 指令)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/stock-alert
+EnvironmentFile=/home/ubuntu/stock-alert/.env
+ExecStart=/home/ubuntu/stock-alert/.venv/bin/python bot_loop.py --bot 2
+
+# 掛掉就重啟。這支在管持倉,停著的代價比重啟大。
+Restart=always
+RestartSec=10
+
+# 日誌交給 journald,用 journalctl -u stark-bot -f 看
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
