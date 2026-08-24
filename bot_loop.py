@@ -109,10 +109,21 @@ def poll(offset):
 
 
 def handle_updates(ups, chat_id):
+    """處理收到的訊息;太舊的只標記已讀不執行
+
+    第一次啟動時 getUpdates 會把積壓的訊息一次倒出來(Telegram 保留 24
+    小時)。沒有這道防線,幾小時前隨手打的 /scan 會在服務一上線就被執行,
+    對早就過去的行情發訊號。tg_poll 本來就有這個防護,搬過來這裡也要有。
+    """
+    now = time.time()
     for u in ups:
         msg = u.get('message') or {}
         if str(msg.get('chat', {}).get('id')) != str(chat_id):
             continue                       # 只認自己的對話
+        if now - msg.get('date', 0) > tg_poll.MAX_AGE_SEC:
+            print(f'[{stamp()}] 略過過舊的訊息:{msg.get("text", "")[:20]}',
+                  flush=True)
+            continue
         text = msg.get('text', '')
         try:
             action = tg_poll.handle(text)
