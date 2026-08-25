@@ -1,18 +1,36 @@
 #!/usr/bin/env bash
-# Oracle Cloud(Ubuntu)一鍵安裝
+# 常駐主機一鍵安裝 — Ubuntu 與 Oracle Linux 都支援
 #
 # 用法:在機器上執行
 #   curl -fsSL https://raw.githubusercontent.com/GGININDERR/stock-alert/main/deploy/setup.sh | bash
 #
-# 做完之後還要編輯 .env 填金鑰,再啟動服務 —— 腳本最後會告訴你怎麼做。
+# 兩種發行版的差別只有套件管理員與預設使用者(ubuntu / opc),其餘完全相同。
+# 自動偵測而不是要你選,是因為選錯的代價是裝到一半失敗,而這一步的使用者
+# 通常正是最不想處理這種問題的人。
 set -euo pipefail
 
 REPO=https://github.com/GGININDERR/stock-alert.git
 DIR=$HOME/stock-alert
+USER_NAME=$(id -un)
+
+echo "▶ 偵測系統"
+if command -v apt-get >/dev/null 2>&1; then
+  PKG=apt
+  echo "  Ubuntu/Debian(使用者 $USER_NAME)"
+elif command -v dnf >/dev/null 2>&1; then
+  PKG=dnf
+  echo "  Oracle Linux/RHEL(使用者 $USER_NAME)"
+else
+  echo "✗ 找不到 apt 或 dnf,不支援這個系統"; exit 1
+fi
 
 echo "▶ 安裝系統套件"
-sudo apt-get update -qq
-sudo apt-get install -y -qq python3-venv python3-pip git
+if [ "$PKG" = apt ]; then
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq python3-venv python3-pip git
+else
+  sudo dnf install -y -q python3 python3-pip git
+fi
 
 echo "▶ 取得程式碼"
 if [ -d "$DIR/.git" ]; then
@@ -49,16 +67,19 @@ else
 fi
 
 echo "▶ 安裝 systemd 服務"
-sudo cp deploy/stark-bot.service /etc/systemd/system/stark-bot.service
+# 服務檔裡的使用者與路徑依實際環境產生,不寫死 —— 寫死 ubuntu 的話,
+# 在 Oracle Linux(使用者 opc)上會靜靜地啟動失敗。
+sed -e "s#__USER__#$USER_NAME#g" -e "s#__DIR__#$DIR#g" \
+    deploy/stark-bot.service | sudo tee /etc/systemd/system/stark-bot.service >/dev/null
 sudo systemctl daemon-reload
 
-cat <<'DONE'
+cat <<DONE
 
 ────────────────────────────────────────
 安裝完成。接下來兩步:
 
 1) 填金鑰
-     nano ~/stock-alert/.env
+     nano $DIR/.env
    把 TELEGRAM_TOKEN_2 和 TELEGRAM_CHAT_ID_2 填上
    (Ctrl+O 存檔、Enter、Ctrl+X 離開)
 
@@ -70,6 +91,6 @@ cat <<'DONE'
      sudo systemctl restart stark-bot   # 改完程式後重啟
      sudo systemctl stop stark-bot      # 停止
      sudo systemctl status stark-bot    # 看狀態
-     cd ~/stock-alert && git pull && sudo systemctl restart stark-bot   # 更新
+     cd $DIR && git pull && sudo systemctl restart stark-bot   # 更新
 ────────────────────────────────────────
 DONE
