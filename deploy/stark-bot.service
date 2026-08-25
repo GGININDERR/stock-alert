@@ -1,0 +1,23 @@
+# 這是範本 —— setup.sh 會把 __USER__ 與 __DIR__ 換成實際值再安裝。
+# 不直接寫死是因為 Ubuntu 的預設使用者是 ubuntu、Oracle Linux 是 opc。
+[Unit]
+Description=Stark bot 常駐主迴圈(掃描 + 出場監控 + Telegram 指令)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+EnvironmentFile=__DIR__/.env
+ExecStart=__DIR__/.venv/bin/python bot_loop.py --bot 2
+
+# 掛掉就重啟。這支在管持倉,停著的代價比重啟大。
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

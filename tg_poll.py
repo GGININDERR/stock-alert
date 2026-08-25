@@ -9,10 +9,15 @@
 大約 5~20 分鐘才會有回應。要即時就得回到 Worker 那條路。
 
 CLI 用法:
-  python tg_poll.py           # 收信並執行指令
+  python tg_poll.py           # 收信並執行指令(bot1:原本的訊號機器人)
+  python tg_poll.py --bot 2   # 服務 bot2(自動交易專用)
   python tg_poll.py --dry     # 只印出解析結果,不執行也不回訊息
 
-環境變數:TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+兩隻機器人共用這一份指令邏輯,差別只在金鑰與推播目標。這樣 bot2 一開始
+就具備 bot1 的全部功能,之後要加的交易指令也只會有一份實作。
+
+環境變數:TELEGRAM_TOKEN / TELEGRAM_CHAT_ID(bot1)
+          TELEGRAM_TOKEN_2 / TELEGRAM_CHAT_ID_2(bot2)
 """
 import argparse
 import json
@@ -24,9 +29,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
-CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
-API = f'https://api.telegram.org/bot{TOKEN}/'
+import notify
+
+# 這幾個由 main() 依 --bot 填入。做成模組層變數是為了讓 api()/send() 不必
+# 每次都傳一份設定進去,但代價是同一個行程只能服務一隻機器人 —— 目前的
+# 用法(一次跑一隻)剛好夠,真要同時服務兩隻再改成類別。
+TOKEN = CHAT_ID = ''
+API = ''
+BOT = 1
 
 # 太舊的訊息不執行:第一次啟用時 Telegram 會把積壓的訊息一次倒出來,
 # 沒有這道防線會把幾天前的指令全部重跑一遍。
@@ -90,6 +100,17 @@ def api(method, **params):
         return {'ok': False, 'description': str(e)}
 
 
+def use_bot(bot):
+    """切換這個行程要服務哪一隻機器人"""
+    global TOKEN, CHAT_ID, API, BOT
+    BOT = bot
+    TOKEN, CHAT_ID = notify.creds(bot)
+    TOKEN = TOKEN or ''
+    CHAT_ID = CHAT_ID or ''
+    API = f'https://api.telegram.org/bot{TOKEN}/'
+    return bool(TOKEN and CHAT_ID)
+
+
 def send(text):
     return api('sendMessage', chat_id=CHAT_ID, text=text, parse_mode='HTML')
 
@@ -118,9 +139,15 @@ def ack(last_id):
 
 
 def run(cmd):
-    """執行腳本;各腳本會自己把結果推回 Telegram"""
+    """執行腳本;各腳本會自己把結果推回 Telegram
+
+    TG_BOT 要傳下去,否則子行程會用預設值把結果發回 bot1 —— 對 bot2
+    來說就是「指令有反應但訊息跑到別的頻道」,很難查。
+    """
     print('執行:', ' '.join(cmd))
-    p = subprocess.run([sys.executable] + cmd, capture_output=True, text=True)
+    env = dict(os.environ, TG_BOT=str(BOT))
+    p = subprocess.run([sys.executable] + cmd, capture_output=True, text=True,
+                       env=env)
     print(p.stdout[-2000:] or '(無輸出)')
     if p.returncode != 0:
         print('stderr:', p.stderr[-1000:])
@@ -208,11 +235,15 @@ def handle(text, dry=False):
 def main(argv=None):
     p = argparse.ArgumentParser(description='Telegram 指令收信')
     p.add_argument('--dry', action='store_true', help='只解析不執行')
+    p.add_argument('--bot', type=int, default=1, choices=(1, 2),
+                   help='服務哪一隻機器人:1=原本的訊號機器人,2=自動交易')
     opt = p.parse_args(argv if argv is not None else sys.argv[1:])
 
-    if not TOKEN or not CHAT_ID:
-        print('TELEGRAM_TOKEN / TELEGRAM_CHAT_ID 沒設定')
+    if not use_bot(opt.bot):
+        tok, chat = notify.BOTS[opt.bot]
+        print(f'{tok} / {chat} 沒設定')
         return 1
+    print(f'服務 bot{opt.bot}')
 
     ups = updates()
     print(f'收到 {len(ups)} 則訊息')

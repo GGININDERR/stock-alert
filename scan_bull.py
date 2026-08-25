@@ -33,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 import exits
+import notify
 
 OKX_TICKERS = 'https://www.okx.com/api/v5/market/tickers?instType=SWAP'
 OKX_CANDLES = 'https://www.okx.com/api/v5/market/candles?instId={inst}&bar={bar}&limit=200'
@@ -52,17 +53,9 @@ TPE = timezone(timedelta(hours=8))
 
 # ───────────────────────── Telegram ─────────────────────────
 
-def send_telegram(message):
-    token = os.environ['TELEGRAM_TOKEN']
-    chat_id = os.environ['TELEGRAM_CHAT_ID']
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    resp = requests.post(url, json={
-        'chat_id': chat_id,
-        'text': message,
-        'parse_mode': 'HTML',
-        'disable_web_page_preview': True,
-    })
-    return resp.ok
+def send_telegram(message, bot=None):
+    """推播;目標由 notify 決定(TG_BOT 環境變數),預設仍是原本那隻機器人"""
+    return notify.send(message, bot)
 
 
 # ───────────────────────── 工具 ─────────────────────────
