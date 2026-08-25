@@ -24,12 +24,61 @@ else
   echo "✗ 找不到 apt 或 dnf,不支援這個系統"; exit 1
 fi
 
+# 1GB 的機器跑 dnf 會被 OOM 殺掉(實測 Oracle Linux + E2.1.Micro 就是這樣)。
+# 先補一個 swap 檔,裝完之後留著也無妨 —— 常駐服務本身只吃 30MB,
+# 有 swap 只是讓偶爾的尖峰不會直接把行程殺掉。
+ensure_swap() {
+  local mem_mb
+  mem_mb=$(free -m | awk '/^Mem:/{print $2}')
+  local swap_mb
+  swap_mb=$(free -m | awk '/^Swap:/{print $2}')
+  if [ "$mem_mb" -ge 1800 ] || [ "$swap_mb" -ge 1000 ]; then
+    echo "  記憶體 ${mem_mb}MB、swap ${swap_mb}MB,不需要額外配置"
+    return
+  fi
+  if [ -f /swapfile ]; then
+    echo "  /swapfile 已存在,啟用中"
+  else
+    echo "  記憶體只有 ${mem_mb}MB,建立 2GB swap"
+    sudo fallocate -l 2G /swapfile 2>/dev/null || \
+      sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+    sudo chmod 600 /swapfile
+    sudo mkswap -q /swapfile >/dev/null
+  fi
+  sudo swapon /swapfile 2>/dev/null || true
+  grep -q '^/swapfile' /etc/fstab || \
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+}
+
+# 只裝缺的。Oracle Linux 的映像檔通常已經有 python3 與 git,重裝一次
+# 只是白白吃記憶體,而記憶體正是這台最缺的東西。
+missing_pkgs() {
+  local out=()
+  command -v python3 >/dev/null || out+=("$1")
+  command -v git >/dev/null || out+=(git)
+  python3 -c 'import ensurepip' >/dev/null 2>&1 || out+=("$2")
+  echo "${out[@]}"
+}
+
+echo "▶ 檢查記憶體"
+ensure_swap
+
 echo "▶ 安裝系統套件"
 if [ "$PKG" = apt ]; then
-  sudo apt-get update -qq
-  sudo apt-get install -y -qq python3-venv python3-pip git
+  NEED=$(missing_pkgs python3 python3-venv)
+  if [ -n "$NEED" ]; then
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq $NEED python3-pip
+  else
+    echo "  已具備,略過"
+  fi
 else
-  sudo dnf install -y -q python3 python3-pip git
+  NEED=$(missing_pkgs python3 python3-pip)
+  if [ -n "$NEED" ]; then
+    sudo dnf install -y -q $NEED
+  else
+    echo "  已具備,略過"
+  fi
 fi
 
 echo "▶ 取得程式碼"
