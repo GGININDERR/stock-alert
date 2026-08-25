@@ -28,26 +28,33 @@ fi
 # 先補一個 swap 檔,裝完之後留著也無妨 —— 常駐服務本身只吃 30MB,
 # 有 swap 只是讓偶爾的尖峰不會直接把行程殺掉。
 ensure_swap() {
-  local mem_mb
+  local mem_mb swap_mb
   mem_mb=$(free -m | awk '/^Mem:/{print $2}')
-  local swap_mb
   swap_mb=$(free -m | awk '/^Swap:/{print $2}')
   if [ "$mem_mb" -ge 1800 ] || [ "$swap_mb" -ge 1000 ]; then
     echo "  記憶體 ${mem_mb}MB、swap ${swap_mb}MB,不需要額外配置"
     return
   fi
-  if [ -f /swapfile ]; then
-    echo "  /swapfile 已存在,啟用中"
-  else
-    echo "  記憶體只有 ${mem_mb}MB,建立 2GB swap"
+  # 已經掛上就什麼都不用做
+  if swapon --show 2>/dev/null | grep -q '/swapfile'; then
+    echo "  /swapfile 已啟用"
+    return
+  fi
+  if [ ! -f /swapfile ]; then
+    echo "  記憶體只有 ${mem_mb}MB,建立 2GB swap(約 10~30 秒)"
     sudo fallocate -l 2G /swapfile 2>/dev/null || \
       sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
-    sudo chmod 600 /swapfile
-    sudo mkswap -q /swapfile >/dev/null
+  else
+    echo "  /swapfile 已存在但未啟用,重新格式化"
   fi
-  sudo swapon /swapfile 2>/dev/null || true
+  # 檔案可能是上一次跑到一半留下的,沒有 swap 標頭,所以一律重做一次。
+  # mkswap 的參數在各發行版不一致(Oracle Linux 的版本沒有 -q),只用最基本的形式。
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile >/dev/null
+  sudo swapon /swapfile
   grep -q '^/swapfile' /etc/fstab || \
     echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+  echo "  swap 已啟用:$(free -m | awk '/^Swap:/{print $2}')MB"
 }
 
 # 只裝缺的。Oracle Linux 的映像檔通常已經有 python3 與 git,重裝一次
